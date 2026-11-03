@@ -195,6 +195,9 @@ class SQLiteDatabase:
         try:
             conn = self._conn
             conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout.total_seconds() * 1000)}")
+            # Freed pages are zeroed so forgotten content and raw bytes are not recoverable
+            # from the file (R7). Per connection: every process must set it.
+            conn.execute("PRAGMA secure_delete = ON")
             if self.path != ":memory:" and not self.path.startswith("file::memory:"):
                 conn.execute("PRAGMA journal_mode = WAL")
                 conn.execute("PRAGMA synchronous = NORMAL")
@@ -252,6 +255,20 @@ class SQLiteDatabase:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    def checkpoint(self) -> None:
+        """Passive WAL checkpoint: copy committed (securely deleted) pages into the main file.
+
+        Best effort: never blocks writers, and a busy WAL is simply checkpointed later (the
+        last connection to close checkpoints and removes the WAL anyway).
+        """
+        with self._lock:
+            if self._closed:
+                return
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            except sqlite3.Error as exc:
+                _log.debug("passive WAL checkpoint failed: %s", exc)
 
     # -- schema --------------------------------------------------------------------------
     def _init_schema(self) -> None:
@@ -576,7 +593,8 @@ class SQLiteMemoryStore:
             conn.execute("DELETE FROM triggers WHERE memory_id = ?", (memory_id,))
             conn.execute("DELETE FROM memories WHERE rowid = ?", (rowid,))
             self._db.mark_vec_dirty(conn)
-            return True
+        self._db.checkpoint()
+        return True
 
     def iter_memories(self, *, tags: frozenset[str] | None = None) -> Iterator[Memory]:
         """All memories in insertion order (fetched in chunks; the lock is not held between)."""
