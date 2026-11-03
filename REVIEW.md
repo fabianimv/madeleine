@@ -154,3 +154,52 @@ Severity counts: **critical 0 · high 5 · medium 6 · low 15 · nit 6**.
   the hook flags, and `run_bench`. The MCP tool names, inputs and resource
   `recollections://pending` match the documented surface. Time is included in sense (MCP, HTTP,
   CLI, hook) and only when `at` is given in recall (MCP, HTTP, CLI), consistently.
+
+## Resolution (lead, after the review)
+
+All 32 findings were addressed on `fmv/dazzling-bell-jmzwuo`, each with a regression test
+(635 tests pass, up from 441). The table gives the status and where the fix lives.
+
+| ID | Status | Fix |
+|---|---|---|
+| R1 | fixed | REST guard: Host allow-list (421) and Origin allow-list (403) on every route, including `/mcp` and `/healthz`. Loopback is allowed by default, plus `MADELEINE_ALLOWED_HOSTS`. `serve` passes the bind host. |
+| R2, R3 | fixed | `MadeleineConfig.allow_local_files` (default off) is enforced **inside** the image/audio adapters. It covers `uri` and string `value` and is checked before any filesystem access, with the same message whether or not the file exists. The hash embedder never reads files. MCP keeps its guard as defence in depth. `serve --allow-file-uris` sets the flag for every surface. |
+| R4 | fixed | Full README: quickstart, the `[text]` caveat, privacy, benchmark, limitations. |
+| R5 | fixed (unverified live) | `<!-- mcp-name: io.github.FabianIMV/madeleine -->` is in the README and therefore in the wheel `METADATA`. Not yet tested against the live registry. |
+| R6 | fixed | `GET /recollections/pending` only peeks. Draining is `POST /recollections/drain`. The hook uses the POST. |
+| R7 | fixed | `PRAGMA secure_delete=ON` on every connection, plus a WAL checkpoint after `delete`. A test greps the DB files for content and raw markers. |
+| R8 | fixed | The hook peeks, fits, then drains exactly what it shows. Lines are truncated to 1000 chars, so nothing is lost. |
+| R9 | fixed | Per-channel candidates are `max(candidate_k, k)`. Tags filter before KNN (`nearest_tagged`). |
+| R10 | fixed | `StoreError` returns 409; any other `MadeleineError` returns 500 with its message. |
+| R11 | mitigated | Recollections are wrapped in `<madeleine-recollections>` delimiters and labelled untrusted. Control and bidi characters are stripped and delimiters inside content are neutralised. The trust model is documented in SECURITY.md and the Claude Code example. |
+| R12 | fixed | `parse_timestamp` rejects non-strings, and adapter field checks return 422. A fuzz test shows no 500s. |
+| R13 | fixed | `claim_trigger` checks every trigger in the window, not just the latest. |
+| R14 | fixed | `nearest` checks `vec_dirty` and uses brute force until the index is rebuilt. |
+| R15 | fixed | A claim requires the memory to exist. Delete purges queue rows in the same transaction, and the engine holds one lock across claim and put. |
+| R16 | fixed | The data directory is `0700` and the DB, `-wal` and `-shm` files are `0600`. Existing world-readable files are tightened. |
+| R17 | fixed | Local media files are size-checked after the policy check and again before embedding. |
+| R18 | fixed | Empty cues are rejected everywhere. Unknown recall channels return 422 on HTTP and a tool error on MCP. `query` is literal. MCP `remember` takes `metadata`. `source` is capped at 64 chars everywhere. Both surfaces return `prompt_line`. |
+| R19 | fixed | URI descriptions and messages no longer suggest remote URLs. |
+| R20 | fixed | Queue rows (schema 2) hold the id plus score explanation, and the memory is rehydrated on read. Includes a v1 to v2 migration. |
+| R21 | fixed | Config overrides are validated. CLI errors print a message without a traceback. `--lat` and `--lon` must be given together. |
+| R22 | fixed | The hook supports `--token-file` and the env var. `--token` is deprecated and warns. The hook warns when a token would go over cleartext HTTP to a non-loopback host. |
+| R23 | fixed | `serve` refuses a non-loopback bind without `MADELEINE_API_TOKEN` unless `--insecure-no-auth` is given. |
+| R24 | fixed | The version is defined once in `madeleine.__version__` (hatch dynamic). The release workflow checks the tag, `__init__` and `server.json`. |
+| R25 | fixed | Direct dependencies are declared, `mcp`/`mcp-types` are pinned to `>=2.3,<2.4`, and a test fails loudly if the SDK internals move. |
+| R26 | fixed | `pending_recollections.limit` is capped with `le=1000`. |
+| R27 | fixed | The sdist excludes CLAUDE.md, PLAN.md, REVIEW.md, `.github`, `.claude` and `uv.lock`. |
+| R28 | fixed | ARCHITECTURE.md and the docstrings now match the code. |
+| R29 | fixed | `engine.now()` is used. |
+| R30 | fixed | Only `remember` registers channels. Reads call a read-only `check_channel`. |
+| R31 | fixed | Every third-party action is pinned by commit SHA. |
+| R32 | fixed | Skipped optional channels are logged at INFO unless they were explicitly requested. |
+
+Deliberately deferred:
+
+* `nearest_tagged` and `check_channel` are optional store extensions that the engine detects
+  at runtime, with fallbacks. They are not yet in the `MemoryStore` protocol; adding them
+  needs an ADR.
+* There is no `madeleine vacuum` command. It is only relevant to databases created before
+  R7, and none exist outside development.
+* `FakeEngine` keeps simplified refractory semantics. It is a test double for consumers,
+  not for the engine.

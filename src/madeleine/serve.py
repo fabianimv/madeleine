@@ -29,22 +29,28 @@ def build_http_app(engine: Any, *, host: str = "127.0.0.1") -> Any:
     ``host`` feeds both DNS-rebinding protections (the MCP SDK's and the REST guard): the
     loopback names are always allowed, a non-loopback bind address is added.
     """
-    from madeleine.ingest.app import create_app
+    from madeleine.ingest.app import create_app, default_allowed_hosts
     from madeleine.mcp_server.http import mcp_asgi_app
 
     allow_files = bool(engine.config.allow_local_files)
     mcp_app, mcp_lifespan = mcp_asgi_app(engine, host=host, allow_file_uris=allow_files)
-    extra: dict[str, Any] = {}
-    if host not in LOOPBACK_HOSTS:
-        # TODO(R1 merge): pass allowed_hosts directly once create_app gains the parameter.
-        extra["allowed_hosts"] = [*sorted(LOOPBACK_HOSTS), host]
-    return create_app(engine, mounts={"/mcp": mcp_app}, lifespans=[mcp_lifespan], **extra)
+    hosts = list(default_allowed_hosts())  # loopback + $MADELEINE_ALLOWED_HOSTS
+    if host not in LOOPBACK_HOSTS and host not in {"0.0.0.0", "::"} and host not in hosts:  # noqa: S104
+        hosts.append(host)
+    return create_app(
+        engine, mounts={"/mcp": mcp_app}, lifespans=[mcp_lifespan], allowed_hosts=hosts
+    )
 
 
 def check_bind(host: str, *, insecure_no_auth: bool = False) -> None:
     """Refuse a non-loopback bind without ``MADELEINE_API_TOKEN`` unless explicitly allowed."""
     if host in LOOPBACK_HOSTS:
         return
+    if host in {"0.0.0.0", "::"}:  # noqa: S104
+        logger.warning(
+            "binding to all interfaces: clients must use a Host name listed in "
+            "MADELEINE_ALLOWED_HOSTS (e.g. this machine's LAN IP), or requests get 421"
+        )
     if os.environ.get("MADELEINE_API_TOKEN"):
         return
     if insecure_no_auth:

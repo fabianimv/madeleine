@@ -159,7 +159,7 @@ with known ground truth, distractors and hard negatives. The numbers below are f
 | memory several years old | 0.63 | 0.93 | 0.40 | 0.86 |
 | **negatives** (distractors, time-only, same place + other topic) | | | false-trigger rate **0.00** | |
 
-Latency with 500 memories: `sense` p50 18 ms and p95 40 ms, in pure Python.
+Latency with 500 memories: `sense` p50 11 ms and p95 23 ms, in pure Python.
 
 **Honest limitations**
 

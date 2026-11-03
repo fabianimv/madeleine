@@ -95,7 +95,7 @@ def create_app(engine: MemoryEngine, *, mounts: Mapping[str, ASGIApp] | None = N
 # integrations/claude_code.py (ingestion)
 def main(argv: Sequence[str] | None = None, *, stdin=None, stdout=None,
          engine_factory: Callable[[MadeleineConfig], MemoryEngine] | None = None) -> int
-#  flags: --url --token --db --sense-prompt --limit --timeout; always exits 0
+#  flags: --url --token-file --token (deprecated) --db --sense-prompt --limit --timeout; always exits 0
 
 # evals (evals)
 def run_bench(*, memories: int = 500, cues: int = 300, seed: int = 0,
@@ -130,9 +130,14 @@ One file (default `~/.madeleine/madeleine.db`, WAL mode). Tables (core-engine ma
 * `channels(name PK, dim, model_id)`
 * `vectors(memory, channel, embedding)` — source of truth; `vec_ch<channel id>` — `vec0` KNN index rebuilt from it (named by integer id, never by channel name)
 * `triggers(memory_id, at)`
-* `queue(seq INTEGER PK AUTOINCREMENT, rec_id, memory_id, payload_json, enqueued_at)`
+* `queue(seq INTEGER PK AUTOINCREMENT, rec_id, memory_id, payload_json, enqueued_at)` —
+  `payload_json` (schema 2) holds only the memory id + score explanation; the memory is
+  rehydrated from `memories` on peek/drain, and rows of forgotten memories are dropped
 
-`drain` deletes in a single transaction (`BEGIN IMMEDIATE`). If `sqlite_vec` cannot be
+`drain` deletes in a single transaction (`BEGIN IMMEDIATE`). Every connection sets
+`PRAGMA secure_delete = ON`; files are created owner-only (`0600`, directory `0700`).
+`meta.vec_dirty` (vectors written by a process without sqlite-vec) makes `nearest` use exact
+brute force until the index is rebuilt. If `sqlite_vec` cannot be
 loaded (some system Pythons disable extension loading) the store falls back to numpy
 brute-force over vectors kept in a plain table, logging a warning once.
 

@@ -156,8 +156,6 @@ def test_host_check_runs_before_auth(engine: FakeEngine) -> None:
 # these tests pin the HTTP-level behaviour: always a 4xx, and the same message whether or
 # not the file exists (no existence oracle).
 
-_NEEDS_ADAPTER_POLICY = pytest.mark.xfail(strict=False, reason="needs adapter policy R2")
-
 
 @pytest.fixture
 def real_client() -> Iterator[TestClient]:
@@ -195,7 +193,6 @@ def _status_and_details(
     return out
 
 
-@_NEEDS_ADAPTER_POLICY
 @pytest.mark.parametrize("channel", ["image", "audio"])
 @pytest.mark.parametrize("key", ["uri", "value"])
 def test_local_file_refs_rejected_without_oracle(
@@ -212,7 +209,6 @@ def test_local_file_refs_rejected_without_oracle(
     assert existing == missing  # identical status and message: no file-existence oracle
 
 
-@_NEEDS_ADAPTER_POLICY
 @pytest.mark.parametrize(
     ("channel", "ref"),
     [
