@@ -16,12 +16,13 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def build_http_app(engine: Any, *, allow_file_uris: bool = False) -> Any:
-    """FastAPI app with the ingestion routes and MCP mounted at ``/mcp``."""
+def build_http_app(engine: Any, *, host: str = "127.0.0.1", allow_file_uris: bool = False) -> Any:
+    """FastAPI app with the ingestion routes and MCP mounted at ``/mcp`` (clients should use
+    ``/mcp/``; ``host`` configures the SDK's DNS-rebinding protection)."""
     from madeleine.ingest.app import create_app
     from madeleine.mcp_server.http import mcp_asgi_app
 
-    mcp_app, mcp_lifespan = mcp_asgi_app(engine, allow_file_uris=allow_file_uris)
+    mcp_app, mcp_lifespan = mcp_asgi_app(engine, host=host, allow_file_uris=allow_file_uris)
     return create_app(engine, mounts={"/mcp": mcp_app}, lifespans=[mcp_lifespan])
 
 
@@ -53,7 +54,7 @@ def serve(
                     "MADELEINE_API_TOKEN to require a bearer token",
                     host,
                 )
-            app = build_http_app(engine, allow_file_uris=allow_file_uris)
+            app = build_http_app(engine, host=host, allow_file_uris=allow_file_uris)
             uvicorn.run(app, host=host, port=port, log_level="warning")
         else:
             raise ValueError(f"unknown transport {transport!r}")

@@ -529,9 +529,9 @@ class RecallConfig:
     PUSH (``sense``): a memory becomes a recollection iff
     ``score >= trigger_threshold`` **and** ``len(S) >= min_shared_channels`` **and**
     at least one channel in ``S`` has ``ChannelSpec.solo_trigger`` (so "same hour" alone
-    never fires) **and** the memory is not refractory (``abs(cue timestamp - last trigger) <
-    refractory_period``; symmetric so late, out-of-order cues are suppressed too). At most ``max_push_per_cue``
-    recollections per cue, highest score first. Each one records a trigger time
+    never fires) **and** the memory is not refractory
+    (``abs(cue timestamp - last trigger) < refractory_period``; symmetric, so late
+    out-of-order cues are suppressed too). At most ``max_push_per_cue`` recollections per cue, highest score first. Each one records a trigger time
     (habituation) and is appended to the queue.
     """
 
@@ -908,6 +908,11 @@ class MemoryEngine(Protocol):
 
     @property
     def queue(self) -> RecollectionQueue: ...
+
+    def now(self) -> datetime:
+        """Current time from the engine's injected :class:`Clock` (tz-aware). Front-ends use
+        it as the default for ``at`` so tests with a fake clock stay deterministic."""
+        ...
 
     def build_cue(
         self,

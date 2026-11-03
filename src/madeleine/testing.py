@@ -234,6 +234,9 @@ class FakeEngine:
     def queue(self) -> FakeQueue:
         return self._queue
 
+    def now(self) -> datetime:
+        return self._clock.now()
+
     # -- helpers ---------------------------------------------------------------------
     def _observations(
         self,

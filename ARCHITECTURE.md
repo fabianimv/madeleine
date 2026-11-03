@@ -143,7 +143,7 @@ brute-force over vectors kept in a plain table, logging a warning once.
 Resource `recollections://pending` (JSON list, non-draining peek). When the in-process queue
 listener fires, or the poller sees `pending_count` grow (other process), the server sends
 `notifications/resources/updated` for that URI to subscribed sessions.
-Image/audio over MCP: `signals[].value` is base64 with `mime_type`, or a `uri` (file paths
+Image/audio over MCP and HTTP: `signals[].data_b64` (base64) with `mime_type`, or a `uri` (file paths
 only if the server was started with `--allow-file-uris`; off by default).
 
 ## HTTP surface (ingestion)

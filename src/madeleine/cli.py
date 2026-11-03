@@ -118,12 +118,12 @@ def remember(
 ) -> None:
     """Store a memory with its sensory fingerprint (time, place, text)."""
     from madeleine.core.serde import context_from_fields
-    from madeleine.core.types import MadeleineError, SystemClock
+    from madeleine.core.types import MadeleineError
 
     engine = _engine(db, text_backend)
     try:
         ctx = context_from_fields(
-            now=SystemClock().now(),
+            now=engine.now(),
             at=at,
             geohash=geohash,
             lat=lat,
@@ -155,11 +155,11 @@ def sense(
 ) -> None:
     """Send a sensory cue; involuntary recollections that fire are queued (and printed)."""
     from madeleine.core.serde import context_from_fields
-    from madeleine.core.types import MadeleineError, RawSignal, SystemClock
+    from madeleine.core.types import MadeleineError, RawSignal
 
     engine = _engine(db, text_backend)
     try:
-        ctx = context_from_fields(now=SystemClock().now(), at=at, geohash=geohash, lat=lat, lon=lon)
+        ctx = context_from_fields(now=engine.now(), at=at, geohash=geohash, lat=lat, lon=lon)
         signals = []
         if text:
             signals.append(RawSignal("text", text))
@@ -193,13 +193,13 @@ def recall(
 ) -> None:
     """Explicitly search memories (pull mode)."""
     from madeleine.core.serde import context_from_fields
-    from madeleine.core.types import MadeleineError, RawSignal, RecallQuery, SystemClock
+    from madeleine.core.types import MadeleineError, RawSignal, RecallQuery
 
     if query is None and at is None and geohash is None and lat is None:
         raise _fail("give a query, --at, --geohash or --lat/--lon")
     engine = _engine(db, text_backend)
     try:
-        ctx = context_from_fields(now=SystemClock().now(), at=at, geohash=geohash, lat=lat, lon=lon)
+        ctx = context_from_fields(now=engine.now(), at=at, geohash=geohash, lat=lat, lon=lon)
         signals = [RawSignal("text", query)] if query else []
         cue = engine.build_cue(signals, context=ctx, include_time=at is not None, source="cli")
         hits = engine.recall(RecallQuery(cue=cue, k=k))
