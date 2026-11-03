@@ -22,5 +22,6 @@ def test_env_and_overrides() -> None:
 
 def test_resolve_db_path(tmp_path: Path) -> None:
     assert resolve_db_path(":memory:") == ":memory:"
-    target = resolve_db_path(f"{tmp_path}/nested/dir/m.db")
-    assert target.endswith("nested/dir/m.db")
+    target = resolve_db_path(str(tmp_path / "nested" / "dir" / "m.db"))
+    assert Path(target) == tmp_path / "nested" / "dir" / "m.db"
+    assert Path(target).parent.is_dir()
