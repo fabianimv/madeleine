@@ -1,0 +1,12 @@
+{
+  "content": "Ana proposed at the Eiffel Tower",
+  "lat": 48.8584,
+  "lon": 2.2945,
+  "at": "2024-06-01T21:30:00+02:00",
+  "signals": [
+    {"channel": "biometric", "value": {"heart_rate": 120}}
+  ],
+  "tags": ["ana"],
+  "salience": 1.0,
+  "metadata": {"album": "paris-2024"}
+}

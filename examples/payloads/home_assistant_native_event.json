@@ -1,0 +1,14 @@
+{
+  "event_type": "state_changed",
+  "time_fired": "2026-06-01T19:30:12.483210+00:00",
+  "data": {
+    "entity_id": "weather.home",
+    "old_state": {"entity_id": "weather.home", "state": "cloudy"},
+    "new_state": {
+      "entity_id": "weather.home",
+      "state": "rainy",
+      "attributes": {"friendly_name": "Home", "temperature": 17.2},
+      "last_changed": "2026-06-01T19:30:12.483210+00:00"
+    }
+  }
+}

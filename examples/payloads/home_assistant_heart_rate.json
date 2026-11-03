@@ -1,0 +1,12 @@
+{
+  "event": "state_changed",
+  "entity_id": "sensor.pixel_watch_heart_rate",
+  "state": "92",
+  "attributes": {
+    "friendly_name": "Pixel Watch heart rate",
+    "unit_of_measurement": "bpm"
+  },
+  "latitude": 48.8584,
+  "longitude": 2.2945,
+  "time_fired": "2026-06-01T07:10:00+02:00"
+}
