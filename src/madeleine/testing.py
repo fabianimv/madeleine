@@ -336,7 +336,7 @@ class FakeEngine:
                 if s.score < self._threshold or not (set(s.channel_scores) - {TIME}):
                     continue
                 last = self._fired.get(m.id)
-                if last is not None and now - last < self._refractory:
+                if last is not None and abs(now - last) < self._refractory:
                     continue
                 candidates.append(s)
             candidates.sort(key=lambda s: s.score, reverse=True)

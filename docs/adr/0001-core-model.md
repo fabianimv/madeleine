@@ -78,6 +78,10 @@ score           = clamp(base · coverage · salience_factor · decay_factor, 0, 
 9 am matches every 9 am. Time (and, by default, biometrics) can strengthen a match but never
 cause one alone.
 
+Refractory is symmetric in time: a memory is refractory iff
+`|cue.timestamp − last_triggered| < refractory_period`, so a late-delivered (out-of-order) cue
+just before the last fire is suppressed too; `refractory_period = 0` disables it.
+
 The **refractory period** is the habituation mechanism: walking past the same café all
 afternoon reminds you of it once, not on every GPS ping.
 

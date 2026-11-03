@@ -93,8 +93,11 @@ def main(argv: Sequence[str] | None = None) -> int  # reads hook JSON on stdin
 
 # evals (evals)
 def run_bench(*, memories: int = 500, cues: int = 300, seed: int = 0,
-              registry: ChannelRegistry | None = None,
-              config: RecallConfig | None = None) -> BenchReport  # .to_markdown(), .to_dict()
+              engine_factory: Callable[[RecallConfig], MemoryEngine] | None = None,
+              recall_config: RecallConfig | None = None,
+              thresholds: Sequence[float] | None = None,
+              habituation: bool = True) -> BenchReport  # .to_markdown(), .to_dict()
+# evals/cli.py: main(argv) with --memories --cues --seed --json --output PATH --sweep
 ```
 
 ## Channels (v0 defaults)

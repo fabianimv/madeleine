@@ -529,8 +529,8 @@ class RecallConfig:
     PUSH (``sense``): a memory becomes a recollection iff
     ``score >= trigger_threshold`` **and** ``len(S) >= min_shared_channels`` **and**
     at least one channel in ``S`` has ``ChannelSpec.solo_trigger`` (so "same hour" alone
-    never fires) **and** the memory is not refractory (it last fired less than
-    ``refractory_period`` before the cue's timestamp). At most ``max_push_per_cue``
+    never fires) **and** the memory is not refractory (``abs(cue timestamp - last trigger) <
+    refractory_period``; symmetric so late, out-of-order cues are suppressed too). At most ``max_push_per_cue``
     recollections per cue, highest score first. Each one records a trigger time
     (habituation) and is appended to the queue.
     """
