@@ -1,0 +1,37 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.FabianIMV/madeleine",
+  "title": "madeleine",
+  "description": "Involuntary memory for agents: time, place, sound and IoT cues surface memories unasked",
+  "repository": {
+    "url": "https://github.com/FabianIMV/madeleine",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "madeleine-mcp",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": { "type": "stdio" },
+      "packageArguments": [
+        { "type": "positional", "value": "serve" }
+      ],
+      "environmentVariables": [
+        {
+          "name": "MADELEINE_DB",
+          "description": "SQLite database path (default ~/.madeleine/madeleine.db)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "MADELEINE_TEXT_BACKEND",
+          "description": "auto | sentence-transformers | hash (offline lexical)",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}
