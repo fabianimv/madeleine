@@ -13,7 +13,14 @@ from fastapi.testclient import TestClient
 from starlette.types import Receive, Scope, Send
 
 from madeleine import __version__
-from madeleine.core.types import ChannelNotAvailableError, RawSignal, SensoryContext
+from madeleine.core.types import (
+    ChannelNotAvailableError,
+    MadeleineError,
+    ObservationError,
+    RawSignal,
+    SensoryContext,
+    StoreError,
+)
 from madeleine.ingest import create_app
 from madeleine.ingest.app import DEFAULT_MAX_BODY_BYTES
 from madeleine.testing import FakeClock, FakeEngine
@@ -504,3 +511,28 @@ def test_signal_at_must_be_a_string(client: TestClient) -> None:
     )
     assert r.status_code == 422
     assert "signals[0].at" in r.json()["detail"]
+
+
+# -- R10: error mapping ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("exc", "status"),
+    [
+        (StoreError("text model changed: re-embed or use another database"), 409),
+        (MadeleineError("something deliberate went wrong"), 500),
+        (ObservationError("bad observation"), 422),
+        (ChannelNotAvailableError("pip install 'madeleine-mcp[image]'"), 400),
+    ],
+)
+def test_madeleine_errors_are_mapped_with_their_message(
+    clock: FakeClock, exc: Exception, status: int
+) -> None:
+    class Failing(FakeEngine):
+        def remember(self, *args: Any, **kwargs: Any) -> Any:
+            raise exc
+
+    with TestClient(create_app(Failing(clock=clock)), raise_server_exceptions=False) as c:
+        r = c.post("/memories", json={"content": "x"})
+    assert r.status_code == status
+    assert r.json() == {"detail": str(exc)}

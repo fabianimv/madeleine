@@ -16,8 +16,10 @@ Every serialised recollection is ``Recollection.to_dict()`` plus ``prompt_line``
 (``Recollection.to_prompt_line()``), which remote hooks inject verbatim.
 
 Errors: malformed input (``ObservationError``/``ValueError``) -> 422, an unavailable channel
--> 400, unknown adapter or memory -> 404, missing/invalid bearer token -> 401, body larger
-than ``max_body_bytes`` -> 413. Request bodies and media are never logged.
+-> 400, unknown adapter or memory -> 404, a storage refusal (``StoreError``, e.g. "the text
+model changed") -> 409, any other ``MadeleineError`` -> 500 (all with the error message as
+``detail``), missing/invalid bearer token -> 401, body larger than ``max_body_bytes`` -> 413.
+Request bodies and media are never logged.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from madeleine.core.types import (
     Clock,
     CueAdapter,
     JSONValue,
+    MadeleineError,
     MemoryEngine,
     MemoryNotFoundError,
     ObservationError,
@@ -51,6 +54,7 @@ from madeleine.core.types import (
     RecallQuery,
     Recollection,
     SensoryContext,
+    StoreError,
     SystemClock,
 )
 from madeleine.ingest import _fields as f
@@ -324,10 +328,21 @@ def create_app(
         detail = exc.args[0] if exc.args else "not found"
         return JSONResponse({"detail": f"memory not found: {detail}"}, status_code=404)
 
+    async def _conflict(_: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    async def _internal(_: Request, exc: Exception) -> JSONResponse:
+        _log.warning("request failed: %s", type(exc).__name__)
+        return JSONResponse({"detail": str(exc) or type(exc).__name__}, status_code=500)
+
+    # Starlette picks the handler of the first class in the exception's MRO, so the
+    # specific MadeleineError subclasses must be registered explicitly (as they are here).
     app.add_exception_handler(ObservationError, _unprocessable)
     app.add_exception_handler(ValueError, _unprocessable)
     app.add_exception_handler(ChannelNotAvailableError, _unavailable)
     app.add_exception_handler(MemoryNotFoundError, _not_found)
+    app.add_exception_handler(StoreError, _conflict)
+    app.add_exception_handler(MadeleineError, _internal)
 
     def _sense(
         signals: list[RawSignal], context: SensoryContext | None, source: str
