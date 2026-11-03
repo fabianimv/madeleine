@@ -28,7 +28,7 @@ DEFAULT_GEOHASH_PRECISION = 9
 """Precision used when converting lat/lon to a geohash (~5 m cells)."""
 
 
-def parse_timestamp(value: str | datetime | None, *, default: datetime) -> datetime:
+def parse_timestamp(value: object, *, default: datetime) -> datetime:
     """Parse an ISO-8601 timestamp.
 
     * ``None``/``""`` -> ``default``.
@@ -40,6 +40,8 @@ def parse_timestamp(value: str | datetime | None, *, default: datetime) -> datet
         return default
     if isinstance(value, datetime):
         dt = value
+    elif not isinstance(value, str):
+        raise ObservationError(f"timestamp must be an ISO-8601 string, got {type(value).__name__}")
     else:
         text = value.strip()
         if text.endswith(("Z", "z")):
