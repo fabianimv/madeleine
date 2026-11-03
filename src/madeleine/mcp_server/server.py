@@ -138,11 +138,13 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
         engine: MemoryEngine,
         *,
         poll_interval: float = 1.0,
-        allow_file_uris: bool = False,
+        allow_file_uris: bool | None = None,
         debounce: float = 0.05,
     ) -> None:
         self.engine = engine
-        self.allow_file_uris = allow_file_uris
+        self.allow_file_uris = (
+            engine.config.allow_local_files if allow_file_uris is None else allow_file_uris
+        )
         bus = InMemorySubscriptionBus()
         self.notifier = PendingNotifier(
             engine.queue, bus, poll_interval=poll_interval, debounce=debounce
@@ -466,15 +468,19 @@ def create_server(
     engine: MemoryEngine,
     *,
     poll_interval: float = 1.0,
-    allow_file_uris: bool = False,
+    allow_file_uris: bool | None = None,
     debounce: float = 0.05,
 ) -> MadeleineMCPServer:
     """Build the madeleine MCP server for ``engine``.
 
     * ``poll_interval`` - seconds between ``pending_count()`` polls that detect
       recollections enqueued by *other processes* sharing the database.
-    * ``allow_file_uris`` - accept signals whose ``uri`` is a local path / ``file://``.
-      Off by default: a remote client must not make the server read local files.
+    * ``allow_file_uris`` - let tool calls reference local files (a ``file://``/path
+      ``uri``, or a string ``value`` on image/audio). ``None`` (default) follows
+      ``engine.config.allow_local_files`` (itself off by default: a client must not make
+      the server read local files). This is an early check only: the image/audio
+      adapters enforce the engine's own policy, so ``True`` here cannot grant what the
+      engine's channels refuse.
     * ``debounce`` - seconds to coalesce a burst of recollections into one notification.
 
     The server does not own ``engine``: closing it is the caller's job.
