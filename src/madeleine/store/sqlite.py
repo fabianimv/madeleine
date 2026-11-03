@@ -15,6 +15,11 @@ Layout (``PRAGMA user_version`` = :data:`SCHEMA_VERSION`)::
     raw_blobs(memory_id, channel, data)        -- only for observations that kept ``data``
     triggers(memory_id, at, at_us)
     queue(seq PK AUTOINCREMENT, rec_id, memory_id, payload_json, enqueued_at)
+                                               -- payload: memory id + scores, no content
+
+Schema history: 1 = initial; 2 = slim queue payloads (codec v2: the memory id and score
+explanation only; drained recollections are rehydrated from ``memories``). Opening a v1 file
+migrates its queue rows in place.
 
 The ``vectors`` table is the source of truth; ``vec0`` tables are a KNN index over it. When
 the sqlite-vec extension cannot be loaded, ``nearest`` falls back to numpy brute force over
@@ -63,9 +68,9 @@ from madeleine.core.types import (
     Vector,
 )
 from madeleine.store.codec import (
+    QueuedRecollection,
     observation_from_dict,
-    recollection_from_dict,
-    recollection_to_dict,
+    queued_from_dict,
     vector_from_bytes,
     vector_to_bytes,
 )
@@ -81,7 +86,7 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 VEC_MAX_K = 4096
 """sqlite-vec's KNN ``k`` limit; larger requests use the brute-force path."""
 _CHUNK = 256
@@ -319,6 +324,8 @@ class SQLiteDatabase:
             for stmt in _SCHEMA.split(";"):
                 if stmt.strip():
                     conn.execute(stmt)
+            if 1 <= version < 2:
+                _migrate_queue_to_v2(conn)
             if version < SCHEMA_VERSION:
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (?, ?)",
@@ -375,6 +382,34 @@ def _warn_fallback(reason: str) -> None:
     )
 
 
+def _migrate_queue_to_v2(conn: sqlite3.Connection) -> None:
+    """Schema 1 -> 2: rewrite queue payloads without the memory (content, embeddings and
+    observations). Rows that cannot be decoded or whose memory is gone are dropped; with
+    ``secure_delete`` the old payload bytes are zeroed."""
+    kept = dropped = 0
+    rows = conn.execute("SELECT seq, payload_json FROM queue ORDER BY seq").fetchall()
+    for seq, payload in rows:
+        try:
+            queued = queued_from_dict(json.loads(payload))
+        except (ValueError, KeyError, TypeError):
+            queued = None
+        exists = queued is not None and (
+            conn.execute("SELECT 1 FROM memories WHERE id = ?", (queued.memory_id,)).fetchone()
+            is not None
+        )
+        if queued is None or not exists:
+            conn.execute("DELETE FROM queue WHERE seq = ?", (seq,))
+            dropped += 1
+            continue
+        conn.execute(
+            "UPDATE queue SET payload_json = ?, memory_id = ? WHERE seq = ?",
+            (_queued_payload(queued), queued.memory_id, seq),
+        )
+        kept += 1
+    if rows:
+        _log.info("migrated %d queued recollection(s) to slim payloads (%d dropped)", kept, dropped)
+
+
 def _vec_dirty(conn: sqlite3.Connection) -> bool:
     row = conn.execute("SELECT value FROM meta WHERE key = 'vec_dirty'").fetchone()
     return row is not None and row[0] == "1"
@@ -426,6 +461,82 @@ _MEM_COLS = (
     "rowid, id, content, media_ref, created_at, ts, geohash, salience, "
     "tags_json, metadata_json, observations_json"
 )
+
+
+def _hydrate(
+    conn: sqlite3.Connection, rows: Sequence[Sequence[Any]], *, with_raw: bool = True
+) -> list[Memory]:
+    """Build memories from ``_MEM_COLS`` rows (+ their vectors, and raw bytes if asked)."""
+    if not rows:
+        return []
+    rowids = [int(r[0]) for r in rows]
+    ids = [str(r[1]) for r in rows]
+    marks = ",".join("?" * len(rows))
+    vectors: dict[int, dict[ChannelName, Vector]] = {}
+    for mrow, channel, blob in conn.execute(
+        f"SELECT memory_rowid, channel, embedding FROM vectors WHERE memory_rowid IN ({marks})",
+        rowids,
+    ):
+        vectors.setdefault(int(mrow), {})[str(channel)] = vector_from_bytes(blob)
+    raws: dict[str, dict[ChannelName, bytes]] = {}
+    if with_raw:
+        for mid, channel, data in conn.execute(
+            f"SELECT memory_id, channel, data FROM raw_blobs WHERE memory_id IN ({marks})", ids
+        ):
+            raws.setdefault(str(mid), {})[str(channel)] = bytes(data)
+    out: list[Memory] = []
+    for r in rows:
+        rowid, mid = int(r[0]), str(r[1])
+        observations: dict[ChannelName, Observation] = {}
+        for c, d in json.loads(r[10]).items():
+            obs = observation_from_dict(d)
+            raw = raws.get(mid, {}).get(c)
+            if raw is not None:
+                obs = Observation(
+                    channel=obs.channel,
+                    text=obs.text,
+                    data=raw,
+                    mime_type=obs.mime_type,
+                    uri=obs.uri,
+                    numbers=obs.numbers,
+                    timestamp=obs.timestamp,
+                )
+            observations[c] = obs
+        ctx = SensoryContext(
+            timestamp=datetime.fromisoformat(r[5]),
+            geohash=r[6],
+            tags=frozenset(json.loads(r[8])),
+            salience=float(r[7]),
+        )
+        out.append(
+            Memory(
+                id=mid,
+                content=str(r[2]),
+                fingerprint=SensoryFingerprint(
+                    embeddings=vectors.get(rowid, {}), context=ctx, observations=observations
+                ),
+                created_at=datetime.fromisoformat(r[4]),
+                media_ref=r[3],
+                metadata=json.loads(r[9]),
+            )
+        )
+    return out
+
+
+def _memories_by_id(
+    conn: sqlite3.Connection, memory_ids: Sequence[str], *, with_raw: bool = True
+) -> dict[str, Memory]:
+    wanted = list(dict.fromkeys(memory_ids))
+    by_id: dict[str, Memory] = {}
+    for i in range(0, len(wanted), _CHUNK):
+        chunk = wanted[i : i + _CHUNK]
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT {_MEM_COLS} FROM memories WHERE id IN ({marks})", chunk
+        ).fetchall()
+        for m in _hydrate(conn, rows, with_raw=with_raw):
+            by_id[m.id] = m
+    return by_id
 
 
 class SQLiteMemoryStore:
@@ -576,83 +687,19 @@ class SQLiteMemoryStore:
                     )
             self._db.mark_vec_dirty(conn)
 
-    def _hydrate(self, conn: sqlite3.Connection, rows: Sequence[Sequence[Any]]) -> list[Memory]:
-        if not rows:
-            return []
-        rowids = [int(r[0]) for r in rows]
-        ids = [str(r[1]) for r in rows]
-        marks = ",".join("?" * len(rows))
-        vectors: dict[int, dict[ChannelName, Vector]] = {}
-        for mrow, channel, blob in conn.execute(
-            f"SELECT memory_rowid, channel, embedding FROM vectors WHERE memory_rowid IN ({marks})",
-            rowids,
-        ):
-            vectors.setdefault(int(mrow), {})[str(channel)] = vector_from_bytes(blob)
-        raws: dict[str, dict[ChannelName, bytes]] = {}
-        for mid, channel, data in conn.execute(
-            f"SELECT memory_id, channel, data FROM raw_blobs WHERE memory_id IN ({marks})", ids
-        ):
-            raws.setdefault(str(mid), {})[str(channel)] = bytes(data)
-        out: list[Memory] = []
-        for r in rows:
-            rowid, mid = int(r[0]), str(r[1])
-            observations: dict[ChannelName, Observation] = {}
-            for c, d in json.loads(r[10]).items():
-                obs = observation_from_dict(d)
-                raw = raws.get(mid, {}).get(c)
-                if raw is not None:
-                    obs = Observation(
-                        channel=obs.channel,
-                        text=obs.text,
-                        data=raw,
-                        mime_type=obs.mime_type,
-                        uri=obs.uri,
-                        numbers=obs.numbers,
-                        timestamp=obs.timestamp,
-                    )
-                observations[c] = obs
-            ctx = SensoryContext(
-                timestamp=datetime.fromisoformat(r[5]),
-                geohash=r[6],
-                tags=frozenset(json.loads(r[8])),
-                salience=float(r[7]),
-            )
-            out.append(
-                Memory(
-                    id=mid,
-                    content=str(r[2]),
-                    fingerprint=SensoryFingerprint(
-                        embeddings=vectors.get(rowid, {}), context=ctx, observations=observations
-                    ),
-                    created_at=datetime.fromisoformat(r[4]),
-                    media_ref=r[3],
-                    metadata=json.loads(r[9]),
-                )
-            )
-        return out
-
     def get(self, memory_id: str) -> Memory:
         with self._db.read() as conn:
             rows = conn.execute(
                 f"SELECT {_MEM_COLS} FROM memories WHERE id = ?", (memory_id,)
             ).fetchall()
-            found = self._hydrate(conn, rows)
+            found = _hydrate(conn, rows)
         if not found:
             raise MemoryNotFoundError(memory_id)
         return found[0]
 
     def get_many(self, memory_ids: Sequence[str]) -> list[Memory]:
-        wanted = list(dict.fromkeys(memory_ids))
-        by_id: dict[str, Memory] = {}
         with self._db.read() as conn:
-            for i in range(0, len(wanted), _CHUNK):
-                chunk = wanted[i : i + _CHUNK]
-                marks = ",".join("?" * len(chunk))
-                rows = conn.execute(
-                    f"SELECT {_MEM_COLS} FROM memories WHERE id IN ({marks})", chunk
-                ).fetchall()
-                for m in self._hydrate(conn, rows):
-                    by_id[m.id] = m
+            by_id = _memories_by_id(conn, memory_ids)
         return [by_id[i] for i in memory_ids if i in by_id]
 
     def delete(self, memory_id: str) -> bool:
@@ -694,7 +741,7 @@ class SQLiteMemoryStore:
                     f"SELECT {_MEM_COLS} FROM memories WHERE rowid > ? ORDER BY rowid LIMIT ?",
                     (last, _CHUNK),
                 ).fetchall()
-                batch = self._hydrate(conn, rows)
+                batch = _hydrate(conn, rows)
             if not rows:
                 return
             last = int(rows[-1][0])
@@ -866,8 +913,14 @@ class SQLiteRecollectionQueue:
     """Persistent FIFO shared by every process that opens the same file.
 
     ``drain`` runs in a ``BEGIN IMMEDIATE`` transaction, so each recollection is delivered to
-    exactly one drainer across threads, connections and processes. Payloads are
-    :func:`~madeleine.store.codec.recollection_to_dict` JSON (never raw media bytes).
+    exactly one drainer across threads, connections and processes.
+
+    Payloads are :func:`~madeleine.store.codec.queued_to_dict` JSON: the memory id, the score
+    explanation and the recollection fields, never the memory's content, embeddings,
+    observations or raw bytes (R20). ``peek``/``drain`` rehydrate the memory from the
+    ``memories`` table of the same file (without raw bytes); a recollection whose memory no
+    longer exists is dropped, and ``put`` ignores one whose memory is not in the file. So
+    the queue must share its file with the store (``open_sqlite``, ``create_engine``).
     """
 
     def __init__(
@@ -886,13 +939,19 @@ class SQLiteRecollectionQueue:
         return self._db
 
     def put(self, recollection: Recollection) -> None:
-        payload = json.dumps(recollection_to_dict(recollection), sort_keys=True)
+        """Append unless the memory is not (any more) in the database (then nothing is
+        queued and listeners are not called: a racing ``forget`` won)."""
+        payload = _queued_payload(QueuedRecollection.from_recollection(recollection))
+        memory_id = recollection.memory.id
         with self._db.read() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO queue(rec_id, memory_id, payload_json, enqueued_at) "
-                "VALUES (?, ?, ?, ?)",
-                (recollection.id, recollection.memory.id, payload, datetime.now(UTC).isoformat()),
+                "SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?)",
+                (recollection.id, memory_id, payload, datetime.now(UTC).isoformat(), memory_id),
             )
+        if cur.rowcount != 1:
+            _log.debug("not queueing %s: memory %s does not exist", recollection.id, memory_id)
+            return
         with self._listeners_lock:
             listeners = list(self._listeners)
         _notify(listeners, recollection)
@@ -904,7 +963,7 @@ class SQLiteRecollectionQueue:
                 "SELECT seq, payload_json FROM queue ORDER BY seq LIMIT ?",
                 (-1 if n is None else n,),
             ).fetchall()
-        return _decode(rows)
+            return _decode(conn, rows)
 
     def drain(self, limit: int | None = None) -> list[Recollection]:
         n = _check_limit(limit)
@@ -917,7 +976,7 @@ class SQLiteRecollectionQueue:
             ).fetchall()
             if rows:
                 conn.execute("DELETE FROM queue WHERE seq <= ?", (rows[-1][0],))
-        return _decode(rows)
+            return _decode(conn, rows)
 
     def pending_count(self) -> int:
         with self._db.read() as conn:
@@ -944,12 +1003,26 @@ class SQLiteRecollectionQueue:
             self._db.release()
 
 
-def _decode(rows: Sequence[Sequence[Any]]) -> list[Recollection]:
-    out: list[Recollection] = []
+def _queued_payload(queued: QueuedRecollection) -> str:
+    """Re-encode a decoded entry in the current (slim) codec."""
+    return json.dumps(queued.to_dict(), sort_keys=True)
+
+
+def _decode(conn: sqlite3.Connection, rows: Sequence[Sequence[Any]]) -> list[Recollection]:
+    """Decode queue rows (codec v1 or v2) and rehydrate their memories from the store."""
+    queued: list[tuple[int, QueuedRecollection]] = []
     for seq, payload in rows:
         try:
             data: Mapping[str, Any] = json.loads(payload)
-            out.append(recollection_from_dict(data))
+            queued.append((int(seq), queued_from_dict(data)))
         except (ValueError, KeyError, TypeError):
             _log.exception("dropping undecodable queue entry seq=%s", seq)
+    memories = _memories_by_id(conn, [q.memory_id for _, q in queued], with_raw=False)
+    out: list[Recollection] = []
+    for seq, q in queued:
+        memory = memories.get(q.memory_id)
+        if memory is None:
+            _log.debug("dropping queue entry seq=%s: memory %s no longer exists", seq, q.memory_id)
+            continue
+        out.append(q.with_memory(memory))
     return out

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import stat
@@ -20,6 +21,7 @@ from madeleine.core.types import (
     RawSignal,
     RecallConfig,
     RecallQuery,
+    Recollection,
     SensoryContext,
     SensoryFingerprint,
     StoreError,
@@ -30,8 +32,11 @@ from madeleine.store import (
     InMemoryStore,
     SQLiteDatabase,
     SQLiteMemoryStore,
+    SQLiteRecollectionQueue,
     open_sqlite,
 )
+from madeleine.store import sqlite as sqlite_mod
+from madeleine.store.codec import recollection_to_dict
 from madeleine.testing import FakeClock
 
 from .conftest import EngineFactory
@@ -423,3 +428,144 @@ def test_r30_recall_with_stale_empty_registration(tmp_path: Path, clock: FakeClo
     m = eng.remember("hello")  # the write path re-registers
     assert eng.recall(RecallQuery(eng.build_cue([RawSignal("text", "hello")])))[0].memory == m
     store.close()
+
+
+# -- R20: slim queue payloads ----------------------------------------------------------
+_SLIM_KEYS = {
+    "v",
+    "id",
+    "memory_id",
+    "score",
+    "channel_scores",
+    "salience_factor",
+    "decay_factor",
+    "cue_id",
+    "cue_channels",
+    "triggered_at",
+    "mode",
+    "cue_source",
+}
+
+
+def _payloads(path: Path) -> list[dict[str, object]]:
+    conn = sqlite3.connect(path)
+    rows = conn.execute("SELECT payload_json FROM queue ORDER BY seq").fetchall()
+    conn.close()
+    return [json.loads(r[0]) for r in rows]
+
+
+def test_r20_queue_rows_hold_only_id_and_scores(tmp_path: Path, clock: FakeClock) -> None:
+    path = tmp_path / "slim.db"
+    eng = create_engine(MadeleineConfig(db_path=str(path)), clock=clock, registry=fake_registry())
+    m = eng.remember("CONTENT-IN-QUEUE? no", context=SensoryContext(T, geohash=PARIS))
+    fired = eng.sense(eng.build_cue(context=SensoryContext(T, geohash=PARIS)))
+    (payload,) = _payloads(path)
+    assert set(payload) == _SLIM_KEYS
+    assert payload["memory_id"] == m.id
+    assert "CONTENT-IN-QUEUE" not in json.dumps(payload)
+    assert eng.pending_recollections(drain=False) == fired  # rehydrated from the store
+    assert eng.pending_recollections() == fired
+    eng.close()
+
+
+def test_r20_entry_of_missing_memory_is_dropped(tmp_path: Path, clock: FakeClock) -> None:
+    path = tmp_path / "orphan.db"
+    eng = create_engine(MadeleineConfig(db_path=str(path)), clock=clock, registry=fake_registry())
+    a = eng.remember("a", context=SensoryContext(T, geohash=PARIS))
+    b = eng.remember("b", context=SensoryContext(T, geohash=PARIS))
+    fired = eng.sense(eng.build_cue(context=SensoryContext(T, geohash=PARIS)))
+    assert {r.memory.id for r in fired} == {a.id, b.id}
+    conn = sqlite3.connect(path)  # an orphan row, as an older process could leave behind
+    conn.execute("DELETE FROM memories WHERE id = ?", (a.id,))
+    conn.commit()
+    conn.close()
+    assert [r.memory.id for r in eng.pending_recollections()] == [b.id]
+    assert eng.queue.pending_count() == 0
+    seen: list[Recollection] = []
+    eng.queue.subscribe(seen.append)
+    eng.queue.put(fired[0] if fired[0].memory.id == a.id else fired[1])  # memory gone
+    assert eng.queue.pending_count() == 0
+    assert seen == []
+    eng.close()
+
+
+def _legacy_db(path: Path, clock: FakeClock) -> tuple[list[Recollection], str]:
+    """A schema-1 file whose queue rows were written by the codec-v1 encoder."""
+    eng = create_engine(MadeleineConfig(db_path=str(path)), clock=clock, registry=fake_registry())
+    kept = eng.remember("kept", context=SensoryContext(T, geohash=PARIS))
+    gone = eng.remember("LEGACY-GONE-MARKER", context=SensoryContext(T, geohash=PARIS))
+    fired = eng.sense(eng.build_cue(context=SensoryContext(T, geohash=PARIS)))
+    eng.close()
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA secure_delete = ON")  # the marker may only survive in the queue
+    conn.execute("DELETE FROM queue")
+    for rec in sorted(fired, key=lambda r: r.memory.id != kept.id):
+        conn.execute(
+            "INSERT INTO queue(rec_id, memory_id, payload_json, enqueued_at) VALUES (?,?,?,?)",
+            (rec.id, rec.memory.id, json.dumps(recollection_to_dict(rec)), "2026-01-01"),
+        )
+    conn.execute(
+        "INSERT INTO queue(rec_id, memory_id, payload_json, enqueued_at) "
+        "VALUES ('rec_bad', 'x', 'not json', 'z')"
+    )
+    conn.execute("DELETE FROM memories WHERE id = ?", (gone.id,))
+    conn.execute("DELETE FROM schema_version")
+    conn.execute("INSERT INTO schema_version VALUES (1, '2026-01-01')")
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+    return [r for r in fired if r.memory.id == kept.id], gone.id
+
+
+def test_r20_schema_1_queue_is_migrated(tmp_path: Path, clock: FakeClock) -> None:
+    path = tmp_path / "legacy.db"
+    expected, _gone = _legacy_db(path, clock)
+    conn = sqlite3.connect(path)
+    raw_rows = conn.execute("SELECT payload_json FROM queue").fetchall()
+    conn.close()
+    assert sum('"fingerprint"' in r[0] for r in raw_rows) == 2  # really the old format
+    store, queue = open_sqlite(path)
+    conn = sqlite3.connect(path)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == sqlite_mod.SCHEMA_VERSION
+    versions = conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
+    assert versions == [(1,), (sqlite_mod.SCHEMA_VERSION,)]
+    conn.close()
+    assert [set(p) for p in _payloads(path)] == [_SLIM_KEYS]
+    assert queue.drain() == expected
+    store.close()
+    queue.close()
+    assert b"LEGACY-GONE-MARKER" not in b"".join(p.read_bytes() for p in _db_files(path))
+
+
+def test_r20_v1_row_written_after_migration_still_decodes(tmp_path: Path, clock: FakeClock) -> None:
+    path = tmp_path / "late.db"
+    eng = create_engine(MadeleineConfig(db_path=str(path)), clock=clock, registry=fake_registry())
+    eng.remember("x", context=SensoryContext(T, geohash=PARIS))
+    (rec,) = eng.sense(eng.build_cue(context=SensoryContext(T, geohash=PARIS)))
+    eng.pending_recollections()
+    conn = sqlite3.connect(path)  # e.g. an older madeleine process still running
+    conn.execute(
+        "INSERT INTO queue(rec_id, memory_id, payload_json, enqueued_at) VALUES (?,?,?,?)",
+        (rec.id, rec.memory.id, json.dumps(recollection_to_dict(rec)), "2026-01-01"),
+    )
+    conn.commit()
+    conn.close()
+    assert eng.pending_recollections() == [rec]
+    eng.close()
+
+
+def test_r20_injected_store_gets_a_matching_queue(tmp_path: Path, clock: FakeClock) -> None:
+    cfg = MadeleineConfig(db_path=str(tmp_path / "config-path.db"))
+    store = SQLiteMemoryStore(tmp_path / "elsewhere.db")
+    eng = create_engine(cfg, clock=clock, registry=fake_registry(), store=store)
+    assert isinstance(eng.queue, SQLiteRecollectionQueue)
+    assert eng.queue.database is store.database
+    eng.remember("x", context=SensoryContext(T, geohash=PARIS))
+    fired = eng.sense(eng.build_cue(context=SensoryContext(T, geohash=PARIS)))
+    assert eng.pending_recollections() == fired != []
+    eng.close()
+    assert store.count() == 1  # injected store stays open
+    store.close()
+    eng2 = create_engine(cfg, clock=clock, registry=fake_registry(), store=InMemoryStore())
+    assert isinstance(eng2.queue, InMemoryRecollectionQueue)
+    eng2.close()

@@ -253,7 +253,9 @@ def test_schema_version(tmp_path: Path) -> None:
     SQLiteMemoryStore(path).close()
     conn = sqlite3.connect(path)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == sqlite_mod.SCHEMA_VERSION
-    assert conn.execute("SELECT version FROM schema_version").fetchall() == [(1,)]
+    assert conn.execute("SELECT version FROM schema_version").fetchall() == [
+        (sqlite_mod.SCHEMA_VERSION,)
+    ]
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     conn.execute("PRAGMA user_version = 99")
     conn.commit()

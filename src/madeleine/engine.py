@@ -444,8 +444,10 @@ def create_engine(
     * ``registry`` ``None`` -> ``madeleine.channels.registry.default_registry(config)``
       (imported lazily).
     * ``store`` / ``queue`` ``None`` -> SQLite at ``resolve_db_path(config.db_path)``; when
-      both are created here they share one connection (so ``":memory:"`` works). Whatever
-      the engine creates, ``close()`` closes.
+      both are created here they share one connection (so ``":memory:"`` works). With an
+      injected store and no queue, the queue shares the store's SQLite database, or is
+      in-process for other stores (queued recollections are rehydrated from the store's
+      file). Whatever the engine creates, ``close()`` closes.
     """
     from madeleine.config import resolve_db_path
     from madeleine.store.sqlite import SQLiteDatabase, SQLiteMemoryStore, SQLiteRecollectionQueue
@@ -455,12 +457,21 @@ def create_engine(
         registry = cast(ChannelRegistry, module.default_registry(config))
     owns_store = store is None
     owns_queue = queue is None
-    if store is None or queue is None:
+    if store is None:
         db = SQLiteDatabase(resolve_db_path(config.db_path))
-        if store is None:
-            store = SQLiteMemoryStore(db)
+        store = SQLiteMemoryStore(db)
         if queue is None:
             queue = SQLiteRecollectionQueue(db)
+    elif queue is None:
+        # The SQLite queue rehydrates memories from its own file (R20), so it must share the
+        # injected store's database; any other store gets an in-process queue.
+        if isinstance(store, SQLiteMemoryStore):
+            queue = SQLiteRecollectionQueue(store.database)
+        else:
+            from madeleine.store.memory import InMemoryRecollectionQueue
+
+            _log.info("injected non-SQLite store: using an in-process recollection queue")
+            queue = InMemoryRecollectionQueue()
     return Madeleine(
         config,
         registry=registry,
