@@ -18,10 +18,10 @@ import math
 import threading
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Protocol, cast, runtime_checkable
 
-from madeleine.core.fusion import channel_weight, fuse, is_refractory, push_eligible
+from madeleine.core.fusion import channel_weight, fuse, push_eligible
 from madeleine.core.types import (
     GEO,
     TEXT,
@@ -55,13 +55,6 @@ from madeleine.core.types import (
 __all__ = ["Madeleine", "create_engine", "rank"]
 
 _log = logging.getLogger(__name__)
-
-
-@runtime_checkable
-class _ClaimingStore(Protocol):
-    """Optional store extension: atomic check-and-record of a trigger (both built-in stores)."""
-
-    def claim_trigger(self, memory_id: str, at: datetime, refractory_period: timedelta) -> bool: ...
 
 
 @runtime_checkable
@@ -352,13 +345,8 @@ class Madeleine:
         return fired
 
     def _claim(self, memory_id: str, at: datetime) -> bool:
-        period = self._config.recall.refractory_period
-        if isinstance(self._store, _ClaimingStore):
-            return self._store.claim_trigger(memory_id, at, period)
-        if is_refractory(self._store.last_triggered(memory_id), at, period):
-            return False
-        self._store.record_trigger(memory_id, at)
-        return True
+        # claim_trigger is atomic across processes (see MemoryStore.claim_trigger).
+        return self._store.claim_trigger(memory_id, at, self._config.recall.refractory_period)
 
     def pending_recollections(
         self, *, limit: int | None = None, drain: bool = True

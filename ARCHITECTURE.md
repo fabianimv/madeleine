@@ -80,16 +80,22 @@ def hash_registry(channels: Iterable[str] = (TEXT, TIME, GEO, BIOMETRIC, IMAGE, 
 def create_server(engine: MemoryEngine, *, poll_interval: float = 1.0) -> MCPServer: ...
 def run_stdio(engine: MemoryEngine) -> None: ...
 # mcp_server/http.py
-def mcp_asgi_app(engine: MemoryEngine) -> tuple[ASGIApp, Callable[[], AsyncContextManager[None]]]
+def mcp_asgi_app(engine: MemoryEngine, *, host: str = "127.0.0.1", allow_file_uris: bool = False,
+                 **kwargs) -> tuple[ASGIApp, Callable[[], AsyncContextManager[None]]]
 #  (app, lifespan) to mount at /mcp inside the FastAPI app.
 
 # ingest/app.py (ingestion)
 def create_app(engine: MemoryEngine, *, mounts: Mapping[str, ASGIApp] | None = None,
                lifespans: Sequence[Callable[[], AsyncContextManager[None]]] = (),
-               adapters: Sequence[CueAdapter] | None = None) -> FastAPI: ...
+               adapters: Sequence[CueAdapter] | None = None,
+               api_token: str | None = None,       # None -> $MADELEINE_API_TOKEN, "" -> off
+               max_body_bytes: int | None = None,  # None -> $MADELEINE_MAX_BODY_BYTES or 10 MiB
+               clock: Clock | None = None) -> FastAPI: ...
 
 # integrations/claude_code.py (ingestion)
-def main(argv: Sequence[str] | None = None) -> int  # reads hook JSON on stdin
+def main(argv: Sequence[str] | None = None, *, stdin=None, stdout=None,
+         engine_factory: Callable[[MadeleineConfig], MemoryEngine] | None = None) -> int
+#  flags: --url --token --db --sense-prompt --limit --timeout; always exits 0
 
 # evals (evals)
 def run_bench(*, memories: int = 500, cues: int = 300, seed: int = 0,

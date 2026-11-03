@@ -96,6 +96,8 @@ Embedders may compute with numpy internally but must return a plain tuple of Pyt
 floats (``tuple(arr.astype(float).tolist())``). Stores persist vectors as float32.
 """
 
+# Note: pydantic cannot resolve this recursive alias; FastAPI endpoints annotate their
+# responses as ``dict[str, Any]`` instead.
 JSONValue: TypeAlias = str | int | float | bool | list["JSONValue"] | dict[str, "JSONValue"] | None
 """Any JSON-serialisable value (used by ``to_dict`` helpers and webhook payloads)."""
 
@@ -768,8 +770,9 @@ class MemoryStore(Protocol):
         ...
 
     def add(self, memory: Memory) -> None:
-        """Persist a memory. Raises ``ValueError`` if the id exists or a vector's length
-        differs from the dimension already registered for its channel."""
+        """Persist a memory. Raises ``ValueError`` if the id exists, a channel was not
+        registered with :meth:`register_channel`, or a vector's length differs from the
+        registered dimension."""
         ...
 
     def get(self, memory_id: str) -> Memory:
@@ -785,7 +788,8 @@ class MemoryStore(Protocol):
         ...
 
     def iter_memories(self, *, tags: frozenset[str] | None = None) -> Iterator[Memory]:
-        """Iterate all memories (optionally only those having *all* ``tags``), oldest first."""
+        """Iterate all memories (optionally only those having *all* ``tags``) in insertion
+        order."""
         ...
 
     def count(self) -> int: ...
@@ -803,6 +807,12 @@ class MemoryStore(Protocol):
 
     def last_triggered(self, memory_id: str) -> datetime | None:
         """Most recent involuntary trigger time, or ``None``."""
+        ...
+
+    def claim_trigger(self, memory_id: str, at: datetime, refractory_period: timedelta) -> bool:
+        """Atomically record a trigger at ``at`` unless the memory is refractory
+        (``abs(at - last) < refractory_period``). Returns whether it was recorded. Must be
+        atomic across processes sharing the store, so two engines never double-fire."""
         ...
 
     def close(self) -> None: ...
@@ -826,7 +836,8 @@ class RecollectionQueue(Protocol):
         ...
 
     def peek(self, limit: int | None = None) -> list[Recollection]:
-        """Pending recollections, oldest first, without removing them."""
+        """Pending recollections, oldest first, without removing them. A negative
+        ``limit`` raises ``ValueError`` (same for :meth:`drain`)."""
         ...
 
     def drain(self, limit: int | None = None) -> list[Recollection]:
@@ -895,7 +906,7 @@ class MemoryEngine(Protocol):
 
     Implemented by ``madeleine.engine.Madeleine``; construct one with
     ``madeleine.engine.create_engine(config: MadeleineConfig, *, clock=None,
-    registry=None) -> Madeleine``.
+    registry=None, store=None, queue=None) -> Madeleine``.
     """
 
     @property
