@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -16,7 +17,14 @@ import uvicorn
 from madeleine.core.types import MadeleineConfig, SensoryContext
 from madeleine.ingest import create_app
 from madeleine.integrations import claude_code
-from madeleine.integrations.claude_code import HEADER, MAX_CONTEXT_CHARS, build_output, main
+from madeleine.integrations.claude_code import (
+    HEADER,
+    MAX_CONTEXT_CHARS,
+    MAX_LINE_CHARS,
+    build_output,
+    fit_count,
+    main,
+)
 from madeleine.testing import FakeClock, FakeEngine
 
 
@@ -61,6 +69,21 @@ def queue_one(engine: FakeEngine, clock: FakeClock) -> None:
     )
     engine.sense(engine.build_cue(context=SensoryContext(clock.now(), geohash="u09tunq")))
     assert engine.queue.pending_count() == 1
+
+
+def queue_contents(engine: FakeEngine, clock: FakeClock, contents: list[str]) -> None:
+    """Queue one recollection per content, in this (FIFO) order."""
+    queue_one(engine, clock)
+    [template] = engine.queue.drain()
+    for i, content in enumerate(contents):
+        memory = replace(template.memory, id=f"mem_{i}", content=content)
+        engine.queue.put(
+            replace(template, id=f"rec_{i}", match=replace(template.match, memory=memory))
+        )
+
+
+def context_lines(output: str) -> list[str]:
+    return [line for line in additional_context(output).splitlines() if line.startswith("[")]
 
 
 # -- local mode ------------------------------------------------------------------------
@@ -171,7 +194,11 @@ def test_build_output_caps_size() -> None:
     assert out is not None
     ctx = out["hookSpecificOutput"]["additionalContext"]
     assert len(ctx) <= MAX_CONTEXT_CHARS
-    assert ctx.splitlines() == [HEADER, "x" * 4000, "multi line"]
+    cut = MAX_LINE_CHARS - 1
+    assert ctx.splitlines() == [HEADER, "x" * cut + "…", "multi line", "y" * cut + "…"]
+    out = build_output(["z" * 900] * 20)
+    assert out is not None
+    assert len(out["hookSpecificOutput"]["additionalContext"]) <= MAX_CONTEXT_CHARS
 
 
 def test_hook_module_imports_are_light() -> None:
@@ -271,3 +298,58 @@ def test_line_from_json_fallback() -> None:
     }
     assert claude_code._line_from_json(item) == "[madeleine 0.82 via geo+time] hello (2024-06-01)"
     assert claude_code._line_from_json({**item, "prompt_line": "given"}) == "given"
+
+
+# -- R8: the hook never loses recollections --------------------------------------------
+
+
+def test_long_recollection_is_truncated_not_lost(engine: FakeEngine, clock: FakeClock) -> None:
+    queue_contents(engine, clock, ["L" * 12_000, "short and sweet"])
+    lines = context_lines(run([], engine))
+    assert len(lines) == 2
+    assert len(lines[0]) == MAX_LINE_CHARS
+    assert lines[0].endswith("…")
+    assert "short and sweet" in lines[1]
+    assert engine.queue.pending_count() == 0
+
+
+def _many(n: int) -> list[str]:
+    return [f"memory {i:02d} " + "w" * 900 for i in range(n)]
+
+
+def test_what_does_not_fit_stays_queued(engine: FakeEngine, clock: FakeClock) -> None:
+    contents = _many(15)
+    queue_contents(engine, clock, contents)
+    first = run(["--limit", "15"], engine)
+    assert len(additional_context(first)) <= MAX_CONTEXT_CHARS
+    shown = context_lines(first)
+    assert 1 <= len(shown) < 15
+    assert engine.queue.pending_count() == 15 - len(shown)  # drained exactly what was shown
+    second = context_lines(run(["--limit", "15"], engine))
+    delivered = [line.split("] ", 1)[1].rsplit(" (", 1)[0] for line in shown + second]
+    assert delivered == contents  # every one exactly once, in FIFO order
+    assert engine.queue.pending_count() == 0
+
+
+def test_fit_count_matches_build_output() -> None:
+    lines = ["x" * 5000, "y" * 5000, "z" * 5000] * 5
+    count = fit_count(lines)
+    out = build_output(lines)
+    assert out is not None
+    assert len(out["hookSpecificOutput"]["additionalContext"].splitlines()) - 1 == count
+    assert fit_count(["a" * 50_000]) == 1  # a single huge line always fits (truncated)
+
+
+def test_remote_what_does_not_fit_stays_queued(
+    server: str, engine: FakeEngine, clock: FakeClock
+) -> None:
+    contents = ["L" * 12_000, *_many(14)]
+    queue_contents(engine, clock, contents)
+    argv = ["--url", server, "--token", "hook-token", "--limit", "15"]
+    shown = context_lines(run(argv))
+    assert len(shown[0]) == MAX_LINE_CHARS
+    assert 1 < len(shown) < 15
+    assert engine.queue.pending_count() == 15 - len(shown)
+    rest = context_lines(run(argv))
+    assert len(shown) + len(rest) == 15
+    assert engine.queue.pending_count() == 0

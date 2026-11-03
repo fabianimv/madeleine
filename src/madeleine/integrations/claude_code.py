@@ -14,9 +14,10 @@ the exit code is always 0 (exit code 2 would block the prompt).
 
 Modes:
 
-* local (default): open the madeleine database (``--db`` or ``MADELEINE_DB``) and drain
+* local (default): open the madeleine database (``--db`` or ``MADELEINE_DB``) and take
   ``engine.pending_recollections()``;
-* remote: ``--url http://127.0.0.1:8765`` drains ``POST /recollections/drain`` of a running
+* remote: ``--url http://127.0.0.1:8765`` uses ``GET /recollections/pending`` and
+  ``POST /recollections/drain`` of a running
   ``madeleine serve --transport http`` (token: ``--token`` or ``MADELEINE_API_TOKEN``).
 
 ``--sense-prompt`` first sends the prompt itself as a ``text`` cue, so what the user writes
@@ -40,11 +41,22 @@ from typing import IO, TYPE_CHECKING, Any, NoReturn
 if TYPE_CHECKING:
     from madeleine.core.types import MadeleineConfig, MemoryEngine
 
-__all__ = ["HEADER", "MAX_CONTEXT_CHARS", "build_output", "main"]
+__all__ = [
+    "HEADER",
+    "MAX_CONTEXT_CHARS",
+    "MAX_LINE_CHARS",
+    "build_output",
+    "fit_count",
+    "format_line",
+    "main",
+]
 
 HEADER = "Involuntary recollections surfaced by madeleine (sensory cues, not requested):"
 MAX_CONTEXT_CHARS = 9_500
 """Claude Code caps injected strings at 10 000 characters; stay safely below."""
+MAX_LINE_CHARS = 1_000
+"""Each recollection line is truncated to this (with ``"…"``) so a huge memory never
+crowds out, or blocks, the others."""
 MAX_PROMPT_CUE_CHARS = 4_000
 """Longer prompts are truncated before being sensed as a text cue."""
 CUE_SOURCE = "claude_code"
@@ -98,18 +110,34 @@ def _read_prompt(stdin: IO[str]) -> str | None:
     return prompt if isinstance(prompt, str) and prompt.strip() else None
 
 
+def format_line(line: str) -> str:
+    """One recollection on one line, at most :data:`MAX_LINE_CHARS` (``"…"`` when cut)."""
+    line = " ".join(line.split())  # one recollection per line, whatever the content
+    if len(line) > MAX_LINE_CHARS:
+        line = line[: MAX_LINE_CHARS - 1] + "…"
+    return line
+
+
+def fit_count(lines: Sequence[str]) -> int:
+    """How many of ``lines``, taken in order, fit in the injected context.
+
+    The hook drains exactly this many (the queue is FIFO), so nothing is drained that is
+    not shown. Every line is capped at :data:`MAX_LINE_CHARS`, so the first always fits.
+    """
+    size = len(HEADER)
+    count = 0
+    for line in lines:
+        cost = 1 + len(format_line(line))
+        if size + cost > MAX_CONTEXT_CHARS:
+            break
+        size += cost
+        count += 1
+    return count
+
+
 def build_output(lines: Sequence[str]) -> dict[str, Any] | None:
     """The hook's JSON output for these prompt lines (``None`` when there are none)."""
-    kept: list[str] = []
-    size = len(HEADER)
-    for line in lines:
-        line = " ".join(line.split())  # one recollection per line, whatever the content
-        if not line:
-            continue
-        if size + 1 + len(line) > MAX_CONTEXT_CHARS:
-            break
-        kept.append(line)
-        size += 1 + len(line)
+    kept = [line for line in map(format_line, lines[: fit_count(lines)]) if line]
     if not kept:
         return None
     return {
@@ -147,8 +175,14 @@ def _local_lines(
                 engine.sense(cue)
             except Exception as exc:  # still deliver what is already queued
                 _warn(f"could not sense the prompt: {exc}")
-        items = engine.pending_recollections(limit=args.limit, drain=True)
-        return [r.to_prompt_line() for r in items]
+        # Peek, choose what fits, then drain exactly that many (FIFO): nothing is removed
+        # from the queue that is not injected. A concurrent drainer may take some first.
+        peeked = engine.pending_recollections(limit=args.limit, drain=False)
+        count = fit_count([r.to_prompt_line() for r in peeked])
+        if count == 0:
+            return []
+        drained = engine.pending_recollections(limit=count, drain=True)
+        return [r.to_prompt_line() for r in drained]
     finally:
         engine.close()
 
@@ -223,14 +257,36 @@ def _remote_lines(args: argparse.Namespace, prompt: str | None) -> list[str]:
             )
         except Exception as exc:
             _warn(f"could not sense the prompt: {exc}")
-    query = urllib.parse.urlencode({"limit": args.limit})
-    data = _request(
-        args.url, f"/recollections/drain?{query}", token=token, timeout=args.timeout, method="POST"
+    # Same protocol as local mode: peek (GET), choose what fits, drain exactly that (POST).
+    peek_query = urllib.parse.urlencode({"limit": args.limit})
+    peeked = _recollection_items(
+        _request(
+            args.url, f"/recollections/pending?{peek_query}", token=token, timeout=args.timeout
+        ),
+        "/recollections/pending",
     )
+    count = fit_count([_line_from_json(i) for i in peeked])
+    if count == 0:
+        return []
+    drain_query = urllib.parse.urlencode({"limit": count})
+    drained = _recollection_items(
+        _request(
+            args.url,
+            f"/recollections/drain?{drain_query}",
+            token=token,
+            timeout=args.timeout,
+            method="POST",
+        ),
+        "/recollections/drain",
+    )
+    return [_line_from_json(i) for i in drained]
+
+
+def _recollection_items(data: Any, route: str) -> list[Mapping[str, Any]]:
     items = data.get("recollections") if isinstance(data, Mapping) else None
     if not isinstance(items, list):
-        raise ValueError("unexpected response from /recollections/drain")
-    return [_line_from_json(i) for i in items if isinstance(i, Mapping)]
+        raise ValueError(f"unexpected response from {route}")
+    return [i for i in items if isinstance(i, Mapping)]
 
 
 # -- entry point ------------------------------------------------------------------------
