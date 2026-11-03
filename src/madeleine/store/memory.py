@@ -137,6 +137,27 @@ class InMemoryStore:
             matrix = np.stack([vecs[i] for i in ids])
         return l2_nearest(ids, matrix, vector, k)
 
+    def nearest_tagged(
+        self, channel: ChannelName, vector: Vector, k: int, tags: frozenset[str]
+    ) -> list[tuple[str, float]]:
+        """Like :meth:`nearest`, restricted to memories having *all* ``tags`` (exact).
+
+        An extension of the :class:`~madeleine.core.types.MemoryStore` protocol used by the
+        engine so that tagged recall cannot be starved by closer untagged memories.
+        """
+        if not tags:
+            return self.nearest(channel, vector, k)
+        with self._lock:
+            self._check_open()
+            vecs = self._vectors.get(channel)
+            if not vecs or k <= 0:
+                return []
+            ids = [i for i in vecs if tags <= self._memories[i].context.tags]
+            if not ids:
+                return []
+            matrix = np.stack([vecs[i] for i in ids])
+        return l2_nearest(ids, matrix, vector, k)
+
     def record_trigger(self, memory_id: str, at: datetime) -> None:
         with self._lock:
             self._check_open()

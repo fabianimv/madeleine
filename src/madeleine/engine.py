@@ -62,6 +62,15 @@ class _Closeable(Protocol):
     def close(self) -> None: ...
 
 
+@runtime_checkable
+class _TaggedNearest(Protocol):
+    """Optional store extension: KNN restricted to memories having all ``tags`` (R9)."""
+
+    def nearest_tagged(
+        self, channel: ChannelName, vector: Vector, k: int, tags: frozenset[str]
+    ) -> list[tuple[str, float]]: ...
+
+
 def _to_f32(vector: Sequence[float], channel: Channel) -> Vector:
     """Validate an embedder's output and round it to float32 (what stores persist)."""
     import numpy as np
@@ -268,6 +277,7 @@ class Madeleine:
         *,
         channels: frozenset[ChannelName] | None,
         tags: frozenset[str] | None,
+        k: int,
     ) -> list[ScoredMemory]:
         """Candidate generation (per-channel KNN union) then exact fusion; unsorted."""
         recall = self._config.recall
@@ -287,10 +297,7 @@ class Madeleine:
         if not vectors:
             return []
         self._ensure_registered(vectors)
-        candidate_ids: dict[str, None] = {}
-        for name, vec in vectors.items():
-            for memory_id, _dist in self._store.nearest(name, vec, recall.candidate_k):
-                candidate_ids[memory_id] = None
+        candidate_ids = self._candidates(vectors, max(recall.candidate_k, k), tags)
         memories = self._store.get_many(list(candidate_ids))
         now = cue.context.timestamp
         out: list[ScoredMemory] = []
@@ -302,11 +309,32 @@ class Madeleine:
                 out.append(scored)
         return out
 
+    def _candidates(
+        self, vectors: Mapping[ChannelName, Vector], k: int, tags: frozenset[str] | None
+    ) -> dict[str, None]:
+        """Union of per-channel nearest neighbours (insertion-ordered ids).
+
+        ``k`` per channel is ``max(candidate_k, requested results)``. With ``tags`` the KNN
+        runs over the tagged subset only (``nearest_tagged`` when the store has it, else
+        every tagged memory is a candidate), so tagged matches are never starved (R9).
+        """
+        store = self._store
+        out: dict[str, None] = {}
+        if tags and not isinstance(store, _TaggedNearest):
+            return dict.fromkeys(m.id for m in store.iter_memories(tags=tags))
+        for name, vec in vectors.items():
+            if tags and isinstance(store, _TaggedNearest):
+                hits = store.nearest_tagged(name, vec, k, tags)
+            else:
+                hits = store.nearest(name, vec, k)
+            out.update(dict.fromkeys(memory_id for memory_id, _dist in hits))
+        return out
+
     def recall(self, query: RecallQuery) -> list[ScoredMemory]:
         floor = (
             query.min_score if query.min_score is not None else self._config.recall.pull_threshold
         )
-        scored = self._score(query.cue, channels=query.channels, tags=query.tags)
+        scored = self._score(query.cue, channels=query.channels, tags=query.tags, k=query.k)
         return rank([s for s in scored if s.score >= floor])[: query.k]
 
     def sense(self, cue: Cue) -> list[Recollection]:
@@ -315,7 +343,7 @@ class Madeleine:
         eligible = rank(
             [
                 s
-                for s in self._score(cue, channels=None, tags=None)
+                for s in self._score(cue, channels=None, tags=None, k=recall.max_push_per_cue)
                 if push_eligible(s, solo, recall)
             ]
         )

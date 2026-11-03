@@ -723,6 +723,40 @@ class SQLiteMemoryStore:
             ).fetchall()
         return _brute_force(rows, vector, k, dim)
 
+    def nearest_tagged(
+        self, channel: ChannelName, vector: Vector, k: int, tags: frozenset[str]
+    ) -> list[tuple[str, float]]:
+        """Like :meth:`nearest`, restricted to memories having *all* ``tags``.
+
+        The tag filter runs in SQL (``json_each`` over ``tags_json``) and the distances are
+        exact brute force over that subset, so a tagged memory cannot be starved by closer
+        untagged ones (R9). An extension of the
+        :class:`~madeleine.core.types.MemoryStore` protocol used by the engine.
+        """
+        if not tags:
+            return self.nearest(channel, vector, k)
+        if k <= 0:
+            return []
+        wanted = sorted(tags)
+        marks = ",".join("?" * len(wanted))
+        with self._db.read() as conn:
+            info = self._channels(conn).get(channel)
+            if info is None:
+                return []
+            dim = info[1]
+            if len(vector) != dim:
+                raise ValueError(
+                    f"query vector for {channel!r} has length {len(vector)}, not {dim}"
+                )
+            rows = conn.execute(
+                "SELECT m.id, v.embedding FROM vectors v JOIN memories m "
+                "ON m.rowid = v.memory_rowid WHERE v.channel = ? AND ("
+                f"SELECT COUNT(DISTINCT t.value) FROM json_each(m.tags_json) t "
+                f"WHERE t.value IN ({marks})) = ?",
+                (channel, *wanted, len(wanted)),
+            ).fetchall()
+        return _brute_force(rows, vector, k, dim)
+
     # -- triggers ------------------------------------------------------------------------
     def record_trigger(self, memory_id: str, at: datetime) -> None:
         with self._db.write() as conn:

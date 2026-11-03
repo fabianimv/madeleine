@@ -11,17 +11,26 @@ from pathlib import Path
 
 import pytest
 
+from madeleine.core import geohash
 from madeleine.core.types import (
     ChannelSpec,
     MadeleineConfig,
     Memory,
     MemoryStore,
     RawSignal,
+    RecallConfig,
+    RecallQuery,
     SensoryContext,
     SensoryFingerprint,
 )
 from madeleine.engine import create_engine
-from madeleine.store import InMemoryStore, SQLiteDatabase, SQLiteMemoryStore, open_sqlite
+from madeleine.store import (
+    InMemoryRecollectionQueue,
+    InMemoryStore,
+    SQLiteDatabase,
+    SQLiteMemoryStore,
+    open_sqlite,
+)
 from madeleine.testing import FakeClock
 
 from .conftest import EngineFactory
@@ -251,3 +260,83 @@ def test_r14_vec_connection_sees_fallback_writes_without_reopen(tmp_path: Path) 
     assert [i for i, _ in a.nearest("text", (1.0, 0.0), 5)] == ["mem_text"]
     a.close()
     b.close()
+
+
+# -- R9: candidate count follows k, tags cannot be starved --------------------------------
+def test_r9_recall_k_above_candidate_k(make_engine: EngineFactory) -> None:
+    eng = make_engine(recall=RecallConfig(candidate_k=64))
+    for i in range(100):
+        eng.remember(f"memory {i}", context=SensoryContext(T, geohash=PARIS), embed_content=False)
+    cue = eng.build_cue(context=SensoryContext(T, geohash=PARIS), include_time=False)
+    assert len(eng.recall(RecallQuery(cue, k=100))) == 100
+
+
+def test_r9_tagged_match_not_starved_by_closer_untagged(make_engine: EngineFactory) -> None:
+    eng = make_engine(recall=RecallConfig(candidate_k=8))
+    for i in range(20):
+        eng.remember(f"near {i}", context=SensoryContext(T, geohash=PARIS), embed_content=False)
+    lat, lon = geohash.decode(PARIS)
+    far = geohash.encode(lat + 0.009, lon, 7)  # about 1 km north
+    tagged = eng.remember(
+        "tagged", context=SensoryContext(T, geohash=far, tags=frozenset({"x", "y"}))
+    )
+    cue = eng.build_cue(context=SensoryContext(T, geohash=PARIS), include_time=False)
+    hits = eng.recall(RecallQuery(cue, k=5, tags=frozenset({"x"})))
+    assert [h.memory.id for h in hits] == [tagged.id]
+    assert eng.recall(RecallQuery(cue, tags=frozenset({"x", "y"})))[0].memory.id == tagged.id
+    assert eng.recall(RecallQuery(cue, tags=frozenset({"x", "z"}))) == []
+
+
+@pytest.mark.parametrize("kind", ["memory", "sqlite-vec", "sqlite-fallback"])
+def test_r9_store_nearest_tagged(kind: str, tmp_path: Path) -> None:
+    store: InMemoryStore | SQLiteMemoryStore = (
+        InMemoryStore()
+        if kind == "memory"
+        else SQLiteMemoryStore(tmp_path / "t.db", use_sqlite_vec=kind == "sqlite-vec")
+    )
+    store.register_channel(ChannelSpec("geo", dim=3))
+    for i, tags in enumerate([set(), {"a"}, {"a", "b"}, {"b"}, {"a", "b", "c"}]):
+        fp = SensoryFingerprint(
+            embeddings={"geo": (1.0, float(i), 0.0)},
+            context=SensoryContext(T, tags=frozenset(tags)),
+        )
+        store.add(Memory(id=f"mem_{i}", content="c", fingerprint=fp, created_at=T))
+    q = (1.0, 0.0, 0.0)
+    assert [i for i, _ in store.nearest_tagged("geo", q, 10, frozenset({"a", "b"}))] == [
+        "mem_2",
+        "mem_4",
+    ]
+    assert [i for i, _ in store.nearest_tagged("geo", q, 1, frozenset({"a"}))] == ["mem_1"]
+    assert [i for i, _ in store.nearest_tagged("geo", q, 2, frozenset())] == ["mem_0", "mem_1"]
+    assert store.nearest_tagged("geo", q, 5, frozenset({"zzz"})) == []
+    assert store.nearest_tagged("audio", q, 5, frozenset({"a"})) == []
+    store.close()
+
+
+class _PlainStore:
+    """A protocol-only store (no ``nearest_tagged``): delegates to an InMemoryStore."""
+
+    def __init__(self) -> None:
+        self._inner = InMemoryStore()
+
+    def __getattr__(self, name: str) -> object:
+        if name == "nearest_tagged":
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+
+def test_r9_tags_on_store_without_nearest_tagged(clock: FakeClock) -> None:
+    eng = create_engine(
+        MadeleineConfig(recall=RecallConfig(candidate_k=2)),
+        clock=clock,
+        registry=fake_registry(),
+        store=_PlainStore(),  # type: ignore[arg-type]
+        queue=InMemoryRecollectionQueue(),
+    )
+    for i in range(5):
+        eng.remember(f"near {i}", context=SensoryContext(T, geohash=PARIS), embed_content=False)
+    lat, lon = geohash.decode(PARIS)
+    far = geohash.encode(lat + 0.009, lon, 7)
+    tagged = eng.remember("t", context=SensoryContext(T, geohash=far, tags=frozenset({"x"})))
+    cue = eng.build_cue(context=SensoryContext(T, geohash=PARIS), include_time=False)
+    assert [h.memory.id for h in eng.recall(RecallQuery(cue, tags=frozenset({"x"})))] == [tagged.id]
