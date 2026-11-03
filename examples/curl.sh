@@ -5,7 +5,8 @@
 #   ./examples/curl.sh                        # run all samples
 #
 # Environment: MADELEINE_URL (default http://127.0.0.1:8765) and, if the server was started
-# with MADELEINE_API_TOKEN set, the same MADELEINE_API_TOKEN here.
+# with MADELEINE_API_TOKEN set, the same MADELEINE_API_TOKEN here. A non-loopback
+# MADELEINE_URL host must be in the server's MADELEINE_ALLOWED_HOSTS (else HTTP 421).
 set -euo pipefail
 
 URL="${MADELEINE_URL:-http://127.0.0.1:8765}"
