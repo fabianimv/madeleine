@@ -194,9 +194,10 @@ def push_eligible(
 def is_refractory(last: datetime | None, at: datetime, period: timedelta) -> bool:
     """Whether a memory that last fired at ``last`` must stay silent for a cue at ``at``.
 
-    Refractory iff it fired before (``last`` set), ``period > 0`` and ``at - last < period``
-    (a cue older than the last trigger is therefore also refractory).
+    Refractory iff it fired before (``last`` set) and ``abs(at - last) < period``, in either
+    direction: a late-delivered cue timestamped just before the last fire is suppressed, but
+    a cue far in the past or future is not. ``period == 0`` disables habituation.
     """
     if last is None or period <= timedelta(0):
         return False
-    return at - last < period
+    return abs(at - last) < period

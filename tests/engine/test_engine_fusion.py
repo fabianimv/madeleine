@@ -257,9 +257,23 @@ def test_push_eligible_rules() -> None:
     assert push_eligible(_scored({"text": 1.0}, 0.6), solo, cfg1)
 
 
-@given(st.timedeltas(min_value=timedelta(0), max_value=timedelta(days=3)))
-def test_is_refractory(delta: timedelta) -> None:
-    period = timedelta(hours=6)
-    assert is_refractory(T0, T0 + delta, period) == (delta < period)
+@given(
+    st.timedeltas(min_value=-timedelta(days=3), max_value=timedelta(days=3)),
+    st.timedeltas(min_value=timedelta(0), max_value=timedelta(days=1)),
+)
+def test_is_refractory_symmetric(delta: timedelta, period: timedelta) -> None:
+    expected = period > timedelta(0) and abs(delta) < period
+    assert is_refractory(T0, T0 + delta, period) == expected
+    assert is_refractory(T0 + delta, T0, period) == expected
     assert not is_refractory(None, T0 + delta, period)
     assert not is_refractory(T0, T0 + delta, timedelta(0))
+
+
+def test_is_refractory_edges() -> None:
+    period = timedelta(hours=6)
+    assert is_refractory(T0, T0, period)
+    assert is_refractory(T0, T0 - timedelta(minutes=5), period)  # late webhook
+    assert not is_refractory(T0, T0 - period, period)
+    assert not is_refractory(T0, T0 + period, period)
+    assert not is_refractory(T0, T0 - timedelta(days=365), period)
+    assert not is_refractory(T0, T0, timedelta(0))
