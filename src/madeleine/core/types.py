@@ -531,8 +531,9 @@ class RecallConfig:
     at least one channel in ``S`` has ``ChannelSpec.solo_trigger`` (so "same hour" alone
     never fires) **and** the memory is not refractory
     (``abs(cue timestamp - last trigger) < refractory_period``; symmetric, so late
-    out-of-order cues are suppressed too). At most ``max_push_per_cue`` recollections per cue, highest score first. Each one records a trigger time
-    (habituation) and is appended to the queue.
+    out-of-order cues are suppressed too). At most ``max_push_per_cue`` recollections
+    per cue, highest score first. Each one records a trigger time (habituation) and is
+    appended to the queue.
     """
 
     channel_weights: Mapping[ChannelName, float] = field(default_factory=dict)
