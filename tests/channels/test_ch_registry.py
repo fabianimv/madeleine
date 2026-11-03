@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import itertools
 import logging
 import sys
 from importlib.machinery import ModuleSpec
+from pathlib import Path
 
 import pytest
 
 from madeleine.channels import text as text_module
 from madeleine.channels.hashing import HashEmbedder
 from madeleine.channels.registry import DefaultChannelRegistry, default_registry, hash_registry
+from madeleine.channels.similarity import describe_similarity
 from madeleine.channels.text import SentenceTransformerEmbedder, make_text_channel
 from madeleine.core.types import (
     AUDIO,
@@ -176,3 +180,34 @@ def test_unknown_st_model_dim_needs_package(no_st: None) -> None:
     with pytest.raises(ChannelNotAvailableError, match=r"madeleine-mcp\[text\]"):
         _ = emb.dim
     assert SentenceTransformerEmbedder("someone/custom-model", dim=100).dim == 100
+
+
+def _constant_docstrings(module_path: Path) -> dict[str, str]:
+    """Attribute docstrings (a string literal right after ``NAME: ... = ...``)."""
+    body = ast.parse(module_path.read_text()).body
+    out: dict[str, str] = {}
+    for node, nxt in itertools.pairwise(body):
+        if (
+            isinstance(node, ast.AnnAssign | ast.Assign)
+            and isinstance(nxt, ast.Expr)
+            and isinstance(nxt.value, ast.Constant)
+            and isinstance(nxt.value.value, str)
+        ):
+            targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    out[target.id] = nxt.value.value
+    return out
+
+
+def test_hash_text_similarity_docs_match_the_code() -> None:
+    """R28: the hash text backend uses rescaled_cosine(0.10, 0.45), not max(0, cos)."""
+    spec = hash_registry().get(TEXT).spec
+    assert spec.metric == describe_similarity(text_module.hash_text_similarity)
+    assert spec.metric != "max(0, cosine)"
+    docs = _constant_docstrings(Path(text_module.__file__))
+    assert "max(0" not in docs["hash_text_similarity"]
+    assert "0.10" in docs["hash_text_similarity"]
+    assert "max(0, cosine)" in docs["text_similarity"]
+    assert hash_registry.__doc__ is not None
+    assert "rescaled_cosine(0.10, 0.45)" in hash_registry.__doc__
