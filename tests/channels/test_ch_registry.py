@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import itertools
 import logging
 import sys
 from importlib.machinery import ModuleSpec
+from pathlib import Path
 
 import pytest
 
 from madeleine.channels import text as text_module
 from madeleine.channels.hashing import HashEmbedder
 from madeleine.channels.registry import DefaultChannelRegistry, default_registry, hash_registry
+from madeleine.channels.similarity import describe_similarity
 from madeleine.channels.text import SentenceTransformerEmbedder, make_text_channel
 from madeleine.core.types import (
     AUDIO,
@@ -101,7 +105,7 @@ def test_default_registry_skips_missing_extras(
         "soundfile",
         "sentence_transformers",
     )
-    with caplog.at_level(logging.WARNING, logger="madeleine.channels"):
+    with caplog.at_level(logging.INFO, logger="madeleine.channels"):
         reg = default_registry(MadeleineConfig(db_path=":memory:"))
     assert reg.names() == tuple(sorted((TEXT, TIME, GEO, BIOMETRIC)))
     messages = " ".join(r.getMessage() for r in caplog.records)
@@ -147,7 +151,7 @@ def test_forced_sentence_transformers_without_package(no_st: None) -> None:
 
 
 def test_auto_backend_warns_once(no_st: None, caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.WARNING, logger="madeleine.channels"):
+    with caplog.at_level(logging.INFO, logger="madeleine.channels"):
         first = make_text_channel(MadeleineConfig())
         second = make_text_channel(MadeleineConfig())
     assert isinstance(first.embedder, HashEmbedder)
@@ -176,3 +180,73 @@ def test_unknown_st_model_dim_needs_package(no_st: None) -> None:
     with pytest.raises(ChannelNotAvailableError, match=r"madeleine-mcp\[text\]"):
         _ = emb.dim
     assert SentenceTransformerEmbedder("someone/custom-model", dim=100).dim == 100
+
+
+def _constant_docstrings(module_path: Path) -> dict[str, str]:
+    """Attribute docstrings (a string literal right after ``NAME: ... = ...``)."""
+    body = ast.parse(module_path.read_text()).body
+    out: dict[str, str] = {}
+    for node, nxt in itertools.pairwise(body):
+        if (
+            isinstance(node, ast.AnnAssign | ast.Assign)
+            and isinstance(nxt, ast.Expr)
+            and isinstance(nxt.value, ast.Constant)
+            and isinstance(nxt.value.value, str)
+        ):
+            targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    out[target.id] = nxt.value.value
+    return out
+
+
+def test_hash_text_similarity_docs_match_the_code() -> None:
+    """R28: the hash text backend uses rescaled_cosine(0.10, 0.45), not max(0, cos)."""
+    spec = hash_registry().get(TEXT).spec
+    assert spec.metric == describe_similarity(text_module.hash_text_similarity)
+    assert spec.metric != "max(0, cosine)"
+    docs = _constant_docstrings(Path(text_module.__file__))
+    assert "max(0" not in docs["hash_text_similarity"]
+    assert "0.10" in docs["hash_text_similarity"]
+    assert "max(0, cosine)" in docs["text_similarity"]
+    assert hash_registry.__doc__ is not None
+    assert "rescaled_cosine(0.10, 0.45)" in hash_registry.__doc__
+
+
+def test_skip_notices_are_info_unless_channels_were_requested(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, no_st: None
+) -> None:
+    """R32: a base install does not print warnings on every command."""
+    _hide(monkeypatch, "open_clip", "torch", "PIL", "transformers", "soundfile")
+
+    def levels(cfg: MadeleineConfig) -> dict[str, int]:
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="madeleine.channels"):
+            default_registry(cfg)
+        out: dict[str, int] = {}
+        for r in caplog.records:
+            msg = r.getMessage()
+            for name in ("image", "audio", "smell"):
+                if f"skipping channel '{name}'" in msg:
+                    out[name] = r.levelno
+            if "madeleine-mcp[text]" in msg:
+                out["text"] = r.levelno
+        return out
+
+    monkeypatch.setattr(text_module, "_auto_fallback_warned", False)
+    assert levels(MadeleineConfig(db_path=":memory:")) == {
+        "image": logging.INFO,
+        "audio": logging.INFO,
+        "text": logging.INFO,
+    }
+    explicit = MadeleineConfig(channels=(TEXT, IMAGE, AUDIO, SMELL), text_backend="hash")
+    assert levels(explicit) == {
+        "image": logging.WARNING,
+        "audio": logging.WARNING,
+        "smell": logging.WARNING,
+    }
+    with caplog.at_level(logging.WARNING, logger="madeleine.channels"):
+        caplog.clear()
+        monkeypatch.setattr(text_module, "_auto_fallback_warned", False)
+        default_registry(MadeleineConfig(db_path=":memory:"))
+    assert caplog.records == []

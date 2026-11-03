@@ -131,7 +131,7 @@ def test_image_adapter_bytes() -> None:
 
 
 def test_image_adapter_uris(tmp_path: Path) -> None:
-    a = ImageAdapter()
+    a = ImageAdapter(allow_local_files=True)
     f = tmp_path / "beach photo.png"
     f.write_bytes(PNG)
     by_path = a.normalize(RawSignal(IMAGE, str(f)))
@@ -159,14 +159,15 @@ def test_image_adapter_uris(tmp_path: Path) -> None:
         a.normalize(RawSignal(IMAGE, str(txt)))
 
 
-def test_hash_embedder_uri_hashes_file_content(tmp_path: Path) -> None:
+def test_hash_embedder_hashes_the_uri_string_not_the_file(tmp_path: Path) -> None:
     f = tmp_path / "a.png"
     f.write_bytes(PNG)
-    a = ImageAdapter()
+    a = ImageAdapter(allow_local_files=True)
     emb = HashEmbedder(IMAGE)
-    assert emb.embed(a.normalize(RawSignal(IMAGE, str(f)))) == emb.embed(
-        a.normalize(RawSignal(IMAGE, PNG))
-    )
+    by_path = emb.embed(a.normalize(RawSignal(IMAGE, str(f))))
+    assert by_path == emb.embed(a.normalize(RawSignal(IMAGE, None, uri=f.as_uri())))
+    assert by_path == emb.content_vector(b"uri:" + f.resolve().as_uri().encode())
+    assert by_path != emb.embed(a.normalize(RawSignal(IMAGE, PNG)))
 
 
 def _wav(samples: list[int], rate: int = 16000) -> bytes:
@@ -177,7 +178,7 @@ def _wav(samples: list[int], rate: int = 16000) -> bytes:
 
 
 def test_audio_adapter_inputs(tmp_path: Path) -> None:
-    a = AudioAdapter()
+    a = AudioAdapter(allow_local_files=True)
     wav = _wav([0, 1000, -1000, 0])
     assert a.normalize(RawSignal(AUDIO, wav)).mime_type == "audio/wav"
     assert a.normalize(RawSignal(AUDIO, b"fLaC....")).mime_type == "audio/flac"

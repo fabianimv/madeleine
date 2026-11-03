@@ -1,8 +1,16 @@
 """Private helpers for media channels (image, audio): URIs, MIME sniffing, local reads.
 
-Policy: madeleine never fetches remote media. Only ``file://`` URIs and plain local paths
-are accepted; ``http(s)://`` and other schemes are rejected with
-:class:`~madeleine.core.types.ObservationError`.
+Policy:
+
+* madeleine never fetches remote media. ``http(s)://`` and other non-file schemes are
+  rejected with :class:`~madeleine.core.types.ObservationError`.
+* Local files (``file://`` URIs, bare paths, Windows drive paths) are a **server-side
+  capability, off by default** (``MadeleineConfig.allow_local_files``). The media adapters
+  enforce it themselves (:func:`normalize_file_uri`, :func:`check_uri_label`), so no
+  front-end (MCP, HTTP, webhooks) can bypass it. The refusal is decided *before* any
+  filesystem access and its message never depends on whether the file exists, so it is not
+  a file-existence oracle.
+* Files are capped at :data:`MAX_MEDIA_BYTES`, like in-memory payloads.
 """
 
 from __future__ import annotations
@@ -10,10 +18,14 @@ from __future__ import annotations
 import mimetypes
 import re
 from pathlib import Path
+from typing import Final
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
 from madeleine.core.types import ChannelName, Observation, ObservationError
+
+MAX_MEDIA_BYTES: Final = 32 * 1024 * 1024
+"""Largest accepted media payload, in memory or on disk (32 MiB)."""
 
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
 
@@ -100,9 +112,54 @@ def local_path(uri: str, channel: ChannelName) -> Path:
     return Path(text).expanduser()
 
 
-def normalize_file_uri(uri: str, channel: ChannelName) -> tuple[str, Path]:
-    """Validate a local media reference; return ``(file:// uri, absolute path)``."""
+def local_files_disabled(channel: ChannelName) -> ObservationError:
+    """The refusal for a local file reference when local files are disabled.
+
+    Constant per channel: it never echoes the path nor depends on the file existing.
+    """
+    return ObservationError(
+        f"{channel}: local file paths / file:// URIs are disabled on this server; send the "
+        "media bytes instead (data, or data_b64 over MCP/HTTP). The server operator can "
+        "enable local files with 'serve --allow-file-uris' or MADELEINE_ALLOW_LOCAL_FILES=1"
+    )
+
+
+def check_uri_label(uri: str | None, channel: ChannelName, *, allow_local_files: bool) -> None:
+    """Policy check for a ``uri`` sent *alongside bytes* (a label, never read).
+
+    A remote URI is kept as a plain label. A local path is still a reference to the
+    server's filesystem (it would be persisted with the memory), so it obeys the policy.
+    """
+    if uri is None or allow_local_files:
+        return
+    try:
+        local_path(uri, channel)
+    except ObservationError:
+        return  # remote or malformed: not a local file reference
+    raise local_files_disabled(channel)
+
+
+def _check_size(path: Path, channel: ChannelName, max_bytes: int) -> None:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise ObservationError(f"{channel}: cannot access {str(path)!r}") from exc
+    if size > max_bytes:
+        raise ObservationError(f"{channel}: file is larger than {max_bytes} bytes")
+
+
+def normalize_file_uri(
+    uri: str, channel: ChannelName, *, allow_local_files: bool, max_bytes: int = MAX_MEDIA_BYTES
+) -> tuple[str, Path]:
+    """Validate a local media reference; return ``(file:// uri, absolute path)``.
+
+    Order matters: remote schemes are rejected, then the local-file policy is applied
+    **before any filesystem access** (no existence oracle), then the file must exist and
+    be at most ``max_bytes``.
+    """
     path = local_path(uri, channel)
+    if not allow_local_files:
+        raise local_files_disabled(channel)
     try:
         resolved = path.resolve()
         is_file = resolved.is_file()
@@ -110,7 +167,19 @@ def normalize_file_uri(uri: str, channel: ChannelName) -> tuple[str, Path]:
         raise ObservationError(f"{channel}: cannot access {uri!r}: {exc}") from exc
     if not is_file:
         raise ObservationError(f"{channel}: file not found: {uri!r}")
+    _check_size(resolved, channel, max_bytes)
     return resolved.as_uri(), resolved
+
+
+def checked_local_file(uri: str, channel: ChannelName, *, max_bytes: int = MAX_MEDIA_BYTES) -> Path:
+    """Path of an observation's ``uri`` for an embedder to read, refusing oversized files.
+
+    Embedders only see uri-only observations that an adapter authorised (the engine always
+    normalises signals through the channel's adapter).
+    """
+    path = local_path(uri, channel)
+    _check_size(path, channel, max_bytes)
+    return path
 
 
 def guess_mime_from_path(path: Path) -> str | None:
@@ -124,7 +193,7 @@ def read_media_bytes(observation: Observation) -> bytes:
         return observation.data
     if observation.uri is None:
         raise ObservationError(f"{observation.channel}: observation has neither data nor uri")
-    path = local_path(observation.uri, observation.channel)
+    path = checked_local_file(observation.uri, observation.channel)
     try:
         return path.read_bytes()
     except OSError as exc:

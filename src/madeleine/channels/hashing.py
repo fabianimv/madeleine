@@ -10,8 +10,11 @@ which is salted per process), so they are identical across processes and machine
   unrelated), which is enough for the offline demo and the synthetic benchmark.
 * **Media** (``data`` bytes, or a ``uri``): a pseudo-random unit vector seeded by the
   content hash. Identical content -> identical vector; different content -> near-orthogonal
-  (cosine ~ N(0, 1/dim)). A ``file://`` URI is hashed by the file's *content* when it can be
-  read (so bytes and a path to the same file agree), otherwise by the URI string.
+  (cosine ~ N(0, 1/dim)). A ``uri`` is hashed by its **string**: the hash embedder never
+  reads files, so it cannot be used to read or fingerprint a file the adapter did not
+  authorise. (Bytes and a path to the same file therefore get different vectors; the
+  adapters normalise paths to one absolute ``file://`` URI, so two references to the
+  same file agree.)
 * **Anything else** (``numbers``/``timestamp``): content vector of a canonical encoding.
 
 ``model_id`` is ``"hash-v1/dim=<dim>"`` (``+char3`` with character trigrams). Pair it with
@@ -28,7 +31,6 @@ import unicodedata
 from collections.abc import Sequence
 from typing import Final
 
-from madeleine.channels._media import local_path
 from madeleine.channels.similarity import l2_norm, l2_normalize
 from madeleine.core.types import TEXT, ChannelName, Observation, ObservationError, Vector
 
@@ -167,10 +169,7 @@ class HashEmbedder:
                     feats.append(("c:" + padded[i : i + 3], CHAR_TRIGRAM_WEIGHT))
         return feats
 
-    def _uri_payload(self, observation: Observation) -> bytes:
-        uri = observation.uri or ""
-        try:
-            path = local_path(uri, observation.channel)
-            return b"data:" + path.read_bytes()
-        except (ObservationError, OSError):
-            return b"uri:" + uri.encode("utf-8")
+    @staticmethod
+    def _uri_payload(observation: Observation) -> bytes:
+        # Never read the file (see the module docstring): hash the reference itself.
+        return b"uri:" + (observation.uri or "").encode("utf-8")

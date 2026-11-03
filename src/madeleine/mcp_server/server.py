@@ -46,6 +46,7 @@ from madeleine.core.types import (
     ObservationError,
     RawSignal,
     RecallQuery,
+    Recollection,
 )
 from madeleine.mcp_server._inputs import SignalInput, check_unique_channels, parse_signals
 from madeleine.mcp_server.notifier import PENDING_URI, PendingNotifier
@@ -112,22 +113,26 @@ def _json_result(payload: JSONValue) -> CallToolResult:
     )
 
 
+def _recollection_json(rec: Recollection) -> dict[str, JSONValue]:
+    """A recollection as JSON plus its ready-to-inject ``prompt_line`` (as over HTTP)."""
+    out = rec.to_dict()
+    out["prompt_line"] = rec.to_prompt_line()
+    return out
+
+
+EMPTY_CUE = "the cue is empty: send text, signals, biometric data or a location"
+"""``sense`` refusal when nothing was sensed (same wording as HTTP ``/cues``)."""
+
+SOURCE_MAX_LENGTH = 64
+"""Longest accepted ``sense`` source label (same cap as HTTP)."""
+
+
 async def _in_thread(fn: Callable[[], _T]) -> _T:
     """Run a blocking engine call off the event loop; madeleine errors -> tool errors."""
     try:
         return await anyio.to_thread.run_sync(fn)
     except (MadeleineError, ValueError) as exc:
         raise ToolError(str(exc)) from exc
-
-
-def _engine_now(engine: MemoryEngine) -> datetime:
-    """The engine's notion of "now".
-
-    ``MemoryEngine`` does not expose its clock, but ``build_cue`` stamps an empty cue
-    with it; this keeps tool defaults consistent with injected (fake) clocks.
-    """
-    cue = engine.build_cue((), include_time=False, include_geo=False, source="mcp")
-    return cue.context.timestamp
 
 
 class MadeleineMCPServer(MCPServer[dict[str, Any]]):
@@ -138,11 +143,13 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
         engine: MemoryEngine,
         *,
         poll_interval: float = 1.0,
-        allow_file_uris: bool = False,
+        allow_file_uris: bool | None = None,
         debounce: float = 0.05,
     ) -> None:
         self.engine = engine
-        self.allow_file_uris = allow_file_uris
+        self.allow_file_uris = (
+            engine.config.allow_local_files if allow_file_uris is None else allow_file_uris
+        )
         bus = InMemorySubscriptionBus()
         self.notifier = PendingNotifier(
             engine.queue, bus, poll_interval=poll_interval, debounce=debounce
@@ -216,14 +223,25 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
                 str | None,
                 Field(description="Optional pointer (URI/path) to related media; never opened."),
             ] = None,
+            metadata: Annotated[
+                dict[str, str] | None,
+                Field(
+                    description=(
+                        "Optional string key/value annotations stored with the memory "
+                        '(not embedded, not matched), e.g. {"app": "notes"}.'
+                    )
+                ),
+            ] = None,
         ) -> CallToolResult:
             def run() -> JSONValue:
-                now = _engine_now(engine)
+                now = engine.now()
                 context = serde.context_from_fields(
                     now=now, at=at, geohash=geohash, lat=lat, lon=lon, tags=tags, salience=salience
                 )
                 raw = self._signals(signals, now)
-                memory = engine.remember(content, raw, context=context, media_ref=media_ref)
+                memory = engine.remember(
+                    content, raw, context=context, media_ref=media_ref, metadata=metadata
+                )
                 return memory.to_dict()
 
             return _json_result(await _in_thread(run))
@@ -259,7 +277,7 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
                     raise ObservationError(
                         "recall needs at least one of: query, geohash or lat/lon, at"
                     )
-                now = _engine_now(engine)
+                now = engine.now()
                 context = serde.context_from_fields(
                     now=now, at=at, geohash=geohash, lat=lat, lon=lon
                 )
@@ -308,11 +326,16 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
             ] = None,
             signals: Signals = None,
             source: Annotated[
-                str, Field(description="Who is reporting the cue (free text).")
+                str,
+                Field(
+                    description="Who is reporting the cue (free text).",
+                    min_length=1,
+                    max_length=SOURCE_MAX_LENGTH,
+                ),
             ] = "mcp",
         ) -> CallToolResult:
             def run() -> JSONValue:
-                now = _engine_now(engine)
+                now = engine.now()
                 context = serde.context_from_fields(
                     now=now, at=at, geohash=geohash, lat=lat, lon=lon
                 )
@@ -323,14 +346,17 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
                     items.append({"channel": "biometric", "value": biometric})
                 items.extend(signals or ())
                 raw = self._signals(items, now)
+                if not raw and context.geohash is None:
+                    raise ObservationError(EMPTY_CUE)
                 cue = engine.build_cue(raw, context=context, include_time=True, source=source)
-                return [r.to_dict() for r in engine.sense(cue)]
+                return [_recollection_json(r) for r in engine.sense(cue)]
 
             return _json_result(await _in_thread(run))
 
         async def pending_recollections(
             limit: Annotated[
-                int | None, Field(description="Maximum number to return (oldest first).", ge=1)
+                int | None,
+                Field(description="Maximum number to return (oldest first).", ge=1, le=1000),
             ] = None,
             drain: Annotated[
                 bool,
@@ -344,7 +370,7 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
         ) -> CallToolResult:
             def run() -> JSONValue:
                 recs = engine.pending_recollections(limit=limit, drain=drain)
-                return [r.to_dict() for r in recs]
+                return [_recollection_json(r) for r in recs]
 
             return _json_result(await _in_thread(run))
 
@@ -385,10 +411,11 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
             sense,
             description=(
                 "Report what is being sensed right now (PUSH): text, location, biometrics or "
-                "raw signals. The current time is always part of the cue. Memories whose "
-                "encoding context matches strongly fire as involuntary recollections: they "
-                "are returned here and also queued (see pending_recollections). A memory "
-                "that just fired will not fire again for a while (habituation)."
+                "raw signals (at least one of them). The current time is always part of the "
+                "cue. Memories whose encoding context matches strongly fire as involuntary "
+                "recollections: they are returned here and also queued (see "
+                "pending_recollections). A memory that just fired will not fire again for a "
+                "while (habituation)."
             ),
             annotations=ToolAnnotations(title="Sense", read_only_hint=False, idempotent_hint=False),
             structured_output=False,
@@ -423,7 +450,7 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
 
         async def pending() -> str:
             recs = await anyio.to_thread.run_sync(lambda: engine.pending_recollections(drain=False))
-            return json.dumps([r.to_dict() for r in recs], ensure_ascii=False)
+            return json.dumps([_recollection_json(r) for r in recs], ensure_ascii=False)
 
         self.resource(
             PENDING_URI,
@@ -466,15 +493,19 @@ def create_server(
     engine: MemoryEngine,
     *,
     poll_interval: float = 1.0,
-    allow_file_uris: bool = False,
+    allow_file_uris: bool | None = None,
     debounce: float = 0.05,
 ) -> MadeleineMCPServer:
     """Build the madeleine MCP server for ``engine``.
 
     * ``poll_interval`` - seconds between ``pending_count()`` polls that detect
       recollections enqueued by *other processes* sharing the database.
-    * ``allow_file_uris`` - accept signals whose ``uri`` is a local path / ``file://``.
-      Off by default: a remote client must not make the server read local files.
+    * ``allow_file_uris`` - let tool calls reference local files (a ``file://``/path
+      ``uri``, or a string ``value`` on image/audio). ``None`` (default) follows
+      ``engine.config.allow_local_files`` (itself off by default: a client must not make
+      the server read local files). This is an early check only: the image/audio
+      adapters enforce the engine's own policy, so ``True`` here cannot grant what the
+      engine's channels refuse.
     * ``debounce`` - seconds to coalesce a burst of recollections into one notification.
 
     The server does not own ``engine``: closing it is the caller's job.
