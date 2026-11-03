@@ -26,7 +26,7 @@ from typing import Any, Final
 
 from madeleine.channels._extras import import_extra, module_available
 from madeleine.channels.hashing import HashEmbedder
-from madeleine.channels.similarity import cosine01
+from madeleine.channels.similarity import cosine01, describe_similarity, rescaled_cosine
 from madeleine.core.types import (
     TEXT,
     Channel,
@@ -44,8 +44,10 @@ from madeleine.core.types import (
 
 __all__ = [
     "DEFAULT_TEXT_MODEL",
+    "HASH_TEXT_COSINE_RANGE",
     "SentenceTransformerEmbedder",
     "TextAdapter",
+    "hash_text_similarity",
     "make_text_channel",
     "text_similarity",
 ]
@@ -66,6 +68,18 @@ _KNOWN_DIMS: Final[dict[str, int]] = {
 }
 
 text_similarity: Final = cosine01
+
+HASH_TEXT_COSINE_RANGE: Final = (0.10, 0.45)
+"""Calibration of the lexical hash embedder's compressed cosine scale.
+
+Measured on the synthetic benchmark generator with seed 1 (the reported benchmark uses
+seed 0): unrelated pairs have median cosine 0.02 and p99 0.20 (mostly same-topic texts);
+paraphrases share only part of their words, median 0.34, p90 0.40. Without rescaling a
+paraphrase would count as "34 % similar" and drag down every multi-channel cue it is part
+of. ``rescaled_cosine(0.10, 0.45)`` maps "unrelated" to ~0 and "paraphrase" to ~0.7,
+the same treatment CLIP/CLAP get for their (opposite) compression.
+"""
+hash_text_similarity: Final = rescaled_cosine(*HASH_TEXT_COSINE_RANGE)
 """``max(0, cosine)``."""
 
 _auto_fallback_warned = False
@@ -231,13 +245,15 @@ def make_text_channel(
         else:  # pragma: no cover - guarded by the TextBackend literal
             raise ValueError(f"unknown text backend {chosen!r}")
     is_st = isinstance(embedder, SentenceTransformerEmbedder)
+    is_hash = embedder.model_id is not None and embedder.model_id.startswith("hash-")
+    similarity = hash_text_similarity if is_hash else cosine01
     spec = ChannelSpec(
         name=TEXT,
         dim=embedder.dim,
         default_weight=1.0,
         solo_trigger=True,
-        metric="max(0, cosine)",
+        metric=describe_similarity(similarity),
         model_id=embedder.model_id,
         extra="text" if is_st else None,
     )
-    return Channel(spec=spec, adapter=TextAdapter(), embedder=embedder, similarity=cosine01)
+    return Channel(spec=spec, adapter=TextAdapter(), embedder=embedder, similarity=similarity)

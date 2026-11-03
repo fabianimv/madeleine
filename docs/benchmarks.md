@@ -153,6 +153,96 @@ perceptual embedder (CLIP/CLAP via the `[image]`/`[audio]` extras) is plugged in
 
 ## Results
 
-_To be filled in after integration (engine + channels merged) by running
-`madeleine bench --sweep` on the default configuration; include the machine, the commit
-and the text backend._
+Run on the integration branch (Linux x86-64 container, Python 3.13, pure-Python
+embedders, SQLite + sqlite-vec), default configuration, offline **hash** text backend:
+
+```bash
+madeleine bench --sweep          # 500 memories, 300 cues, seed 0 -- about 16 s
+```
+
+### Overall
+
+| category | cues | +/- | R@1 | R@5 | R@10 | precision | hit rate | false-trigger | fires |
+|---|---:|:---:|---:|---:|---:|---:|---:|---:|---:|
+| overall | 300 | ± | 0.691 | 0.782 | 0.814 | 0.692 | 0.525 | 0.000 | 208 |
+
+### Per category
+
+| category | cues | +/- | R@1 | R@5 | R@10 | precision | hit rate | false-trigger | fires |
+|---|---:|:---:|---:|---:|---:|---:|---:|---:|---:|
+| context | 42 | + | 0.571 | 0.586 | 0.598 | 0.563 | 0.810 | n/a | 126 |
+| text_paraphrase | 42 | + | 0.929 | 0.976 | 1.000 | 1.000 | 0.214 | n/a | 9 |
+| multi | 42 | + | 0.786 | 0.976 | 1.000 | 0.800 | 0.667 | n/a | 35 |
+| exact_media | 24 | + | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | n/a | 24 |
+| perturbed_media | 24 | + | 0.083 | 0.125 | 0.208 | n/a | 0.000 | n/a | 0 |
+| old_memory | 30 | + | 0.633 | 0.867 | 0.933 | 0.857 | 0.400 | n/a | 14 |
+| distractor | 36 | - | n/a | n/a | n/a | n/a | n/a | 0.000 | 0 |
+| time_only | 24 | - | n/a | n/a | n/a | n/a | n/a | 0.000 | 0 |
+| hard_negative | 36 | - | n/a | n/a | n/a | n/a | n/a | 0.000 | 0 |
+
+R@k = capped recall@k of PULL recall; precision = relevant fires / all fires; hit = positive cues where a relevant memory fired; false = negative cues that fired anything. `n/a` = undefined (e.g. no relevant memories).
+
+### Latency (ms)
+
+| operation | n | p50 | p95 | mean | max |
+|---|---:|---:|---:|---:|---:|
+| remember | 500 | 0.52 | 0.82 | 0.63 | 6.85 |
+| build_cue | 300 | 0.09 | 0.15 | 0.10 | 0.37 |
+| recall | 300 | 18.23 | 39.06 | 17.77 | 42.61 |
+| sense | 300 | 18.13 | 39.91 | 18.39 | 64.07 |
+
+### Habituation
+
+**PASS** - cue #237 (multi) repeated 5x every 600 s inside a 6.0 h refractory period: fires per repeat [1, 0, 0, 0, 0], target fired 1x (expected 1), max fires of any memory 1; after the period the target fired 1x (expected 1).
+
+### Trigger threshold sweep
+
+| threshold | precision | hit rate | false-trigger rate | fires |
+|---:|---:|---:|---:|---:|
+| 0.40 | 0.377 | 0.760 | 0.365 | 509 |
+| 0.45 | 0.419 | 0.750 | 0.271 | 454 |
+| 0.50 | 0.465 | 0.706 | 0.094 | 389 |
+| 0.55 | 0.558 | 0.667 | 0.010 | 310 |
+| 0.60 | 0.684 | 0.574 | 0.000 | 225 |
+| 0.65 | 0.689 | 0.446 | 0.000 | 183 |
+| 0.70 | 0.654 | 0.358 | 0.000 | 159 |
+| 0.75 | 0.611 | 0.245 | 0.000 | 126 |
+| 0.80 | 0.609 | 0.181 | 0.000 | 92 |
+
+Other seeds (overall): seed 2 R@1 0.652, precision 0.644, hit rate 0.583, false-trigger 0.000;
+seed 3 R@1 0.716, precision 0.748, hit rate 0.559, false-trigger 0.000.
+
+### Reading the numbers honestly
+
+* **No negative cue fired anything** at the default threshold 0.62 (distractors, time-only
+  matches, same-place-different-time-and-topic). The sweep shows why the default sits
+  where it does: below ~0.55 false triggers appear quickly (9 % at 0.50, 36 % at 0.40).
+* **Involuntary recall is conservative.** Only about half of the positive cues fire their
+  memory. Text-only paraphrases fire just 21 % of the time: with the lexical hash embedder a
+  paraphrase that shares half its words is not strong enough evidence on its own. Pull
+  recall (R@10 = 1.0 for paraphrases) shows the memory is *findable*; it just does not
+  *intrude*. Real semantic embeddings (`[text]` extra) are expected to help; that run is
+  not reported here because it needs model downloads.
+* **Context cues saturate.** A place + hour cue fires the maximum of 3 memories almost every
+  time, and only 56 % of those are within the strict "same place, same hour ±1 h" ground
+  truth: time carries only half the weight of place, so other memories at the same place
+  but a few hours away also clear the threshold.
+* **Old memories** (years old) fire 40 % of the time: the decay floor (×0.7) keeps them
+  reachable but they need strong multi-channel cues.
+* **Perturbed media fails completely** (0 %), by construction: the offline hash embedder
+  maps any change of bytes to an unrelated vector. Real CLIP/CLAP embedders are needed for
+  "a similar photo" or "the same song, re-recorded".
+* Latency is dominated by pure-Python similarity over up to 64 candidates per channel;
+  p95 ≈ 45 ms for `sense` with 500 memories.
+
+### Calibration note (hash text backend)
+
+Before calibration the hash text channel used `max(0, cos)`. Its cosine scale is compressed
+(paraphrase ≈ 0.34, unrelated ≈ 0.02), so a weak-looking text match dragged down every
+multi-channel cue: `multi` cues fired 4.8 % of the time and old memories 0 %, while
+`context` cues without text fired 81 % (richer cues fired *less*). The channel now uses
+`rescaled_cosine(0.10, 0.45)`, measured on generator **seed 1** (not the reported seed 0).
+Effect on seed 0: overall hit rate 0.294 → 0.525, `multi` 0.048 → 0.667, `old_memory`
+0.000 → 0.400, pull R@1 0.510 → 0.691, false-trigger rate unchanged at 0.000. The fusion
+formula itself was not changed: a genuinely mismatching channel *should* count as evidence
+against (it is what keeps same-place hard negatives from firing).

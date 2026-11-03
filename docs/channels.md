@@ -14,7 +14,7 @@ the pip extra to install.
 
 | Channel | Observation fields read | Embedder (model) | dim | Similarity → [0, 1] | weight | solo | Extra | First-use download |
 |---|---|---|---|---|---|---|---|---|
-| `text` | `text` | `SentenceTransformerEmbedder` (`sentence-transformers/all-MiniLM-L6-v2`) or `HashEmbedder` | 384 (hash: 256) | `max(0, cos)` | 1.0 | yes | `[text]` | ~90 MB |
+| `text` | `text` | `SentenceTransformerEmbedder` (`sentence-transformers/all-MiniLM-L6-v2`) or `HashEmbedder` | 384 (hash: 256) | `max(0, cos)` (hash: cosine rescaled from [0.10, 0.45]) | 1.0 | yes | `[text]` | ~90 MB |
 | `image` | `data` (bytes) or `uri` (local file), `mime_type` | `OpenClipEmbedder` (`ViT-B-32`, `laion2b_s34b_b79k`) | 512 | cosine rescaled `[0.6, 0.95] → [0, 1]` | 1.0 | yes | `[image]` | ~600 MB |
 | `audio` | `data` or `uri`, `mime_type`, `numbers.sample_rate` (raw PCM) | `ClapEmbedder` (`laion/clap-htsat-unfused`) | 512 | cosine rescaled `[0.4, 0.95] → [0, 1]` | 1.0 | yes | `[audio]` | ~600 MB |
 | `time` | `timestamp` | `TimeEncoder` (cyclical, deterministic) | 6 | weighted mean of `(1 + cos Δθ)/2` | 0.5 | **no** | – | – |
