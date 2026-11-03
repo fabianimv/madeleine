@@ -322,7 +322,8 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
 
         async def pending_recollections(
             limit: Annotated[
-                int | None, Field(description="Maximum number to return (oldest first).", ge=1)
+                int | None,
+                Field(description="Maximum number to return (oldest first).", ge=1, le=1000),
             ] = None,
             drain: Annotated[
                 bool,

@@ -246,6 +246,9 @@ async def test_structured_content_mirrors_text(engine: FakeEngine, mode: str) ->
         ("recall", {}, "at least one"),
         ("recall", {"query": "x", "k": 0}, "k"),
         ("pending_recollections", {"limit": 0}, "limit"),
+        ("pending_recollections", {"limit": 1001}, "limit"),
+        ("pending_recollections", {"limit": 10**20}, "limit"),
+        ("recall", {"query": "x", "k": 101}, "k"),
         ("forget", {}, "memory_id"),
     ],
 )
