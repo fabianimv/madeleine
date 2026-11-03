@@ -233,7 +233,7 @@ seed 3 R@1 0.716, precision 0.748, hit rate 0.559, false-trigger 0.000.
   maps any change of bytes to an unrelated vector. Real CLIP/CLAP embedders are needed for
   "a similar photo" or "the same song, re-recorded".
 * Latency is dominated by pure-Python similarity over up to 64 candidates per channel;
-  p95 ≈ 45 ms for `sense` with 500 memories.
+  p95 ≈ 40 ms for `sense` with 500 memories.
 
 ### Calibration note (hash text backend)
 

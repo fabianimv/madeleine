@@ -141,9 +141,12 @@ class PendingNotifier:
     async def _lead(self, lock: anyio.Lock) -> None:
         async with lock:
             unsubscribe = self._attach()
-            self.running = True
             try:
-                await self._watch()
+                # Read the baseline *before* declaring ourselves running, so a put that
+                # lands during start-up counts as growth instead of hiding in the baseline.
+                baseline = await self._count() or 0
+                self.running = True
+                await self._watch(baseline)
             finally:
                 self.running = False
                 self._detach(unsubscribe)
@@ -213,8 +216,7 @@ class PendingNotifier:
             logger.warning("pending_count() failed; will retry", exc_info=True)
             return None
 
-    async def _watch(self) -> None:
-        baseline = await self._count() or 0
+    async def _watch(self, baseline: int) -> None:
         while True:
             woke = False
             wake = self._wake
