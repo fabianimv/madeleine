@@ -9,8 +9,8 @@
   :class:`~madeleine.core.types.Embedder` you pass (the hash registry uses
   :class:`~madeleine.channels.hashing.HashEmbedder`).
 * **Similarity** - :func:`~madeleine.channels.similarity.rescaled_cosine` with
-  ``IMAGE_COSINE_LO = 0.5`` and ``IMAGE_COSINE_HI = 0.95``: CLIP image-image cosines of
-  unrelated photos typically sit around 0.4-0.6 and near-duplicates above 0.9, so plain
+  ``IMAGE_COSINE_LO = 0.6`` and ``IMAGE_COSINE_HI = 0.95``: CLIP image-image cosines of
+  unrelated images typically sit around 0.5-0.67 and near-duplicates above 0.95, so plain
   ``max(0, cos)`` would make everything look alike. These constants are heuristics; the
   evals are the place to tune them.
 
@@ -70,7 +70,7 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_IMAGE_MODEL: Final = "ViT-B-32"
 DEFAULT_IMAGE_PRETRAINED: Final = "laion2b_s34b_b79k"
-IMAGE_COSINE_LO: Final = 0.5
+IMAGE_COSINE_LO: Final = 0.6
 IMAGE_COSINE_HI: Final = 0.95
 MAX_MEDIA_BYTES: Final = 32 * 1024 * 1024
 """Largest accepted in-memory media payload (32 MiB)."""
@@ -84,7 +84,7 @@ _KNOWN_DIMS: Final[dict[str, int]] = {
 }
 
 image_similarity: Final = rescaled_cosine(IMAGE_COSINE_LO, IMAGE_COSINE_HI)
-"""Cosine mapped from ``[0.5, 0.95]`` to ``[0, 1]`` (clamped)."""
+"""Cosine mapped from ``[0.6, 0.95]`` to ``[0, 1]`` (clamped)."""
 
 
 def parse_image_model(spec: str) -> tuple[str, str | None]:
