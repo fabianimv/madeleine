@@ -145,6 +145,10 @@ class Madeleine:
     def clock(self) -> Clock:
         return self._clock
 
+    def now(self) -> datetime:
+        """Current time from the injected clock (timezone-aware)."""
+        return self._clock.now()
+
     # -- observations --------------------------------------------------------------------
     def _channel(self, name: ChannelName) -> Channel:
         if name not in self._registry:

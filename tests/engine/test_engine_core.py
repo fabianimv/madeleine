@@ -38,6 +38,14 @@ def test_conforms_to_protocol(make_engine: EngineFactory) -> None:
     _static: MemoryEngine = eng
 
 
+def test_now_uses_injected_clock(make_engine: EngineFactory, clock: FakeClock) -> None:
+    eng = make_engine()
+    assert eng.now() == clock.now()
+    clock.advance(timedelta(hours=1))
+    assert eng.now() == clock.now()
+    assert eng.build_cue().context.timestamp == eng.now()
+
+
 # -- build_cue -------------------------------------------------------------------------
 def test_build_cue_derives_time_and_geo(make_engine: EngineFactory, clock: FakeClock) -> None:
     eng = make_engine()
