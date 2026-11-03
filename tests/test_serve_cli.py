@@ -62,3 +62,29 @@ def test_cli_round_trip(tmp_path: object) -> None:
     assert "tea in grandmother's kitchen" in fired.output
     pending = runner.invoke(app, ["pending", "--db", db], env=env)
     assert "tea in grandmother's kitchen" in pending.output
+
+
+def test_allow_file_uris_flag_reaches_engine_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    import madeleine.engine
+    import madeleine.mcp_server.server
+    import madeleine.serve as serve_mod
+    from madeleine.testing import FakeEngine
+
+    seen: dict[str, object] = {}
+
+    def fake_create_engine(config: object) -> FakeEngine:
+        seen["config"] = config
+        return FakeEngine()
+
+    def fake_run_stdio(engine: object, **kwargs: object) -> None:
+        seen["kwargs"] = kwargs
+
+    monkeypatch.setattr(madeleine.engine, "create_engine", fake_create_engine)
+    monkeypatch.setattr(madeleine.mcp_server.server, "run_stdio", fake_run_stdio)
+    monkeypatch.delenv("MADELEINE_ALLOW_LOCAL_FILES", raising=False)
+
+    serve_mod.serve(transport="stdio", db=":memory:")
+    assert seen["config"].allow_local_files is False  # type: ignore[attr-defined]
+    serve_mod.serve(transport="stdio", db=":memory:", allow_file_uris=True)
+    assert seen["config"].allow_local_files is True  # type: ignore[attr-defined]
+    assert seen["kwargs"] == {"allow_file_uris": True}

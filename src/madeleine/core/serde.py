@@ -102,7 +102,7 @@ def signal_from_json(obj: Mapping[str, Any], *, now: datetime | None = None) -> 
         {"channel": "geo", "value": [48.8584, 2.2945]}        # or "u09tunq"
         {"channel": "biometric", "value": {"heart_rate": 92}}
         {"channel": "image", "data_b64": "...", "mime_type": "image/png"}
-        {"channel": "audio", "uri": "https://...", "mime_type": "audio/wav"}
+        {"channel": "audio", "data_b64": "...", "mime_type": "audio/wav"}
         {"channel": "time", "value": "2026-06-01T21:30:00+02:00"}
 
     ``data_b64`` is decoded to ``bytes`` and becomes the value. JSON lists become tuples.
