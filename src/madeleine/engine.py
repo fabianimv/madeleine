@@ -30,6 +30,7 @@ from madeleine.core.types import (
     ChannelName,
     ChannelNotAvailableError,
     ChannelRegistry,
+    ChannelSpec,
     Clock,
     Cue,
     MadeleineConfig,
@@ -60,6 +61,13 @@ _log = logging.getLogger(__name__)
 @runtime_checkable
 class _Closeable(Protocol):
     def close(self) -> None: ...
+
+
+@runtime_checkable
+class _ChannelChecker(Protocol):
+    """Optional store extension: read-only ``register_channel`` check (R30)."""
+
+    def check_channel(self, spec: ChannelSpec) -> bool: ...
 
 
 @runtime_checkable
@@ -216,6 +224,23 @@ class Madeleine:
                     self._store.register_channel(self._channel(name).spec)
                     self._registered.add(name)
 
+    def _searchable(self, names: Collection[ChannelName]) -> list[ChannelName]:
+        """Channels worth a KNN query, without writing anything (R30).
+
+        Read paths never register channels: a channel this engine has not registered is
+        only *checked* (``StoreError`` if the store holds vectors from another model/dim);
+        a channel the store does not know (or holds no vectors for under this spec) has no
+        candidates. Stores without ``check_channel`` are queried as is.
+        """
+        store = self._store
+        if not isinstance(store, _ChannelChecker):
+            return list(names)
+        return [
+            name
+            for name in names
+            if name in self._registered or store.check_channel(self._channel(name).spec)
+        ]
+
     # -- MemoryEngine --------------------------------------------------------------------
     def build_cue(
         self,
@@ -296,8 +321,8 @@ class Madeleine:
             vectors[name] = self._embed(channel, obs)
         if not vectors:
             return []
-        self._ensure_registered(vectors)
-        candidate_ids = self._candidates(vectors, max(recall.candidate_k, k), tags)
+        searchable = {name: vectors[name] for name in self._searchable(vectors)}
+        candidate_ids = self._candidates(searchable, max(recall.candidate_k, k), tags)
         memories = self._store.get_many(list(candidate_ids))
         now = cue.context.timestamp
         out: list[ScoredMemory] = []

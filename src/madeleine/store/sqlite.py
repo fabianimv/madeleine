@@ -476,12 +476,7 @@ class SQLiteMemoryStore:
                 "SELECT COUNT(*) FROM vectors WHERE channel = ?", (spec.name,)
             ).fetchone()[0]
             if held:
-                raise StoreError(
-                    f"channel {spec.name!r} holds {held} vectors with dim={dim}, "
-                    f"model_id={model_id!r}; refusing dim={spec.dim}, model_id={spec.model_id!r} "
-                    "(vectors from different models are not comparable; use a new database "
-                    "or re-embed)"
-                )
+                raise StoreError(_model_change_message(spec, int(held), dim, model_id))
             conn.execute(
                 "UPDATE channels SET dim = ?, model_id = ? WHERE id = ?",
                 (spec.dim, spec.model_id, ch_id),
@@ -492,6 +487,32 @@ class SQLiteMemoryStore:
                 _ensure_vec_table(conn, ch_id, spec.name, spec.dim)
             else:
                 self._db.mark_vec_dirty(conn)
+
+    def check_channel(self, spec: ChannelSpec) -> bool:
+        """Read-only counterpart of :meth:`register_channel` (for recall paths, R30).
+
+        ``True`` if ``spec`` is registered as is; ``False`` if the channel is unknown or holds
+        no vectors under a different ``dim``/``model_id`` (nothing to match: treat as
+        empty). Raises :class:`StoreError` exactly where :meth:`register_channel` would.
+        Never writes.
+        """
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT dim, model_id FROM channels WHERE name = ?", (spec.name,)
+            ).fetchone()
+            if row is None:
+                return False
+            dim, model_id = int(row[0]), row[1]
+            if (dim, model_id) == (spec.dim, spec.model_id):
+                return True
+            held = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM vectors WHERE channel = ?", (spec.name,)
+                ).fetchone()[0]
+            )
+        if held:
+            raise StoreError(_model_change_message(spec, held, dim, model_id))
+        return False
 
     def _channels(self, conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
         rows = conn.execute("SELECT name, id, dim FROM channels").fetchall()
@@ -787,6 +808,15 @@ class SQLiteMemoryStore:
         if not self._closed:
             self._closed = True
             self._db.release()
+
+
+def _model_change_message(spec: ChannelSpec, held: int, dim: int, model_id: object) -> str:
+    return (
+        f"channel {spec.name!r} holds {held} vectors with dim={dim}, "
+        f"model_id={model_id!r}; refusing dim={spec.dim}, model_id={spec.model_id!r} "
+        "(vectors from different models are not comparable; use a new database "
+        "or re-embed)"
+    )
 
 
 def _brute_force(

@@ -22,6 +22,7 @@ from madeleine.core.types import (
     RecallQuery,
     SensoryContext,
     SensoryFingerprint,
+    StoreError,
 )
 from madeleine.engine import create_engine
 from madeleine.store import (
@@ -34,7 +35,7 @@ from madeleine.store import (
 from madeleine.testing import FakeClock
 
 from .conftest import EngineFactory
-from .fakes import fake_registry
+from .fakes import DictRegistry, fake_registry, text_channel
 
 T = datetime(2026, 6, 1, 20, 0, tzinfo=UTC)
 PARIS = "u09tunq"
@@ -340,3 +341,85 @@ def test_r9_tags_on_store_without_nearest_tagged(clock: FakeClock) -> None:
     tagged = eng.remember("t", context=SensoryContext(T, geohash=far, tags=frozenset({"x"})))
     cue = eng.build_cue(context=SensoryContext(T, geohash=PARIS), include_time=False)
     assert [h.memory.id for h in eng.recall(RecallQuery(cue, tags=frozenset({"x"})))] == [tagged.id]
+
+
+# -- R30: recall / sense never write ---------------------------------------------------
+def test_r30_reads_do_not_register_channels(tmp_path: Path, clock: FakeClock) -> None:
+    path = tmp_path / "ro.db"
+    eng = create_engine(MadeleineConfig(db_path=str(path)), clock=clock, registry=fake_registry())
+    cue = eng.build_cue([RawSignal("text", "hello")], context=SensoryContext(T, geohash=PARIS))
+    assert eng.recall(RecallQuery(cue)) == []
+    assert eng.sense(cue) == []
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0] == 0
+    assert (
+        conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'vec_ch%'").fetchone()[0]
+        == 0
+    )
+    conn.close()
+    m = eng.remember("hello there", context=SensoryContext(T, geohash=PARIS))
+    assert eng.recall(RecallQuery(cue))[0].memory.id == m.id
+    eng.close()
+
+
+def test_r30_in_memory_reads_do_not_register(clock: FakeClock) -> None:
+    store = InMemoryStore()
+    eng = create_engine(
+        MadeleineConfig(),
+        clock=clock,
+        registry=fake_registry(),
+        store=store,
+        queue=InMemoryRecollectionQueue(),
+    )
+    cue = eng.build_cue([RawSignal("text", "hello")], context=SensoryContext(T, geohash=PARIS))
+    assert eng.recall(RecallQuery(cue)) == []
+    assert eng.sense(cue) == []
+    assert not store.check_channel(ChannelSpec("text", dim=4))
+
+
+@pytest.mark.parametrize("kind", ["memory", "sqlite"])
+def test_r30_check_channel_is_read_only_register(kind: str, tmp_path: Path) -> None:
+    store: InMemoryStore | SQLiteMemoryStore = (
+        InMemoryStore() if kind == "memory" else SQLiteMemoryStore(tmp_path / "c.db")
+    )
+    spec = ChannelSpec("geo", dim=3, model_id="m1")
+    assert not store.check_channel(spec)  # unknown -> empty, nothing written
+    store.register_channel(spec)
+    assert store.check_channel(spec)
+    assert not store.check_channel(ChannelSpec("geo", dim=3, model_id="m2"))  # no vectors yet
+    fp = SensoryFingerprint(embeddings={"geo": (1.0, 0.0, 0.0)}, context=SensoryContext(T))
+    store.add(Memory(id="mem_a", content="a", fingerprint=fp, created_at=T))
+    with pytest.raises(StoreError, match="geo"):
+        store.check_channel(ChannelSpec("geo", dim=3, model_id="m2"))
+    with pytest.raises(StoreError):
+        store.check_channel(ChannelSpec("geo", dim=4, model_id="m1"))
+    assert store.check_channel(spec)
+    store.close()
+
+
+def test_r30_sense_still_refuses_model_change(tmp_path: Path, clock: FakeClock) -> None:
+    cfg = MadeleineConfig(db_path=str(tmp_path / "m.db"))
+    eng = create_engine(cfg, clock=clock, registry=DictRegistry([text_channel("model-a")]))
+    eng.remember("hello")
+    eng.close()
+    eng2 = create_engine(cfg, clock=clock, registry=DictRegistry([text_channel("model-b")]))
+    with pytest.raises(StoreError):
+        eng2.sense(eng2.build_cue([RawSignal("text", "hello")]))
+    eng2.close()
+
+
+def test_r30_recall_with_stale_empty_registration(tmp_path: Path, clock: FakeClock) -> None:
+    store = SQLiteMemoryStore(tmp_path / "s.db")
+    store.register_channel(ChannelSpec("text", dim=7, model_id="old"))  # no vectors
+    eng = create_engine(
+        MadeleineConfig(),
+        clock=clock,
+        registry=fake_registry(),
+        store=store,
+        queue=InMemoryRecollectionQueue(),
+    )
+    assert eng.recall(RecallQuery(eng.build_cue([RawSignal("text", "hello")]))) == []
+    assert store.check_channel(ChannelSpec("text", dim=7, model_id="old"))  # untouched
+    m = eng.remember("hello")  # the write path re-registers
+    assert eng.recall(RecallQuery(eng.build_cue([RawSignal("text", "hello")])))[0].memory == m
+    store.close()

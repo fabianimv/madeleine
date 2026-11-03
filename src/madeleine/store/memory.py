@@ -78,6 +78,29 @@ class InMemoryStore:
             self._specs[spec.name] = spec
             self._vectors.setdefault(spec.name, {})
 
+    def check_channel(self, spec: ChannelSpec) -> bool:
+        """Read-only counterpart of :meth:`register_channel` (for recall paths, R30).
+
+        ``True`` if ``spec`` is registered as is; ``False`` if the channel is unknown or holds
+        no vectors under a different ``dim``/``model_id`` (nothing to match: treat as
+        empty). Raises :class:`StoreError` exactly where :meth:`register_channel` would.
+        Never writes.
+        """
+        with self._lock:
+            self._check_open()
+            known = self._specs.get(spec.name)
+            if known is None:
+                return False
+            if (known.dim, known.model_id) == (spec.dim, spec.model_id):
+                return True
+            if self._vectors.get(spec.name):
+                raise StoreError(
+                    f"channel {spec.name!r} holds vectors with dim={known.dim}, "
+                    f"model_id={known.model_id!r}; cannot use dim={spec.dim}, "
+                    f"model_id={spec.model_id!r}"
+                )
+            return False
+
     def add(self, memory: Memory) -> None:
         with self._lock:
             self._check_open()
