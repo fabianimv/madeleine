@@ -6,16 +6,25 @@ import os
 import sqlite3
 import stat
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from madeleine.core.types import ChannelSpec, MadeleineConfig, RawSignal, SensoryContext
+from madeleine.core.types import (
+    ChannelSpec,
+    MadeleineConfig,
+    Memory,
+    MemoryStore,
+    RawSignal,
+    SensoryContext,
+    SensoryFingerprint,
+)
 from madeleine.engine import create_engine
-from madeleine.store import SQLiteDatabase, SQLiteMemoryStore, open_sqlite
+from madeleine.store import InMemoryStore, SQLiteDatabase, SQLiteMemoryStore, open_sqlite
 from madeleine.testing import FakeClock
 
+from .conftest import EngineFactory
 from .fakes import fake_registry
 
 T = datetime(2026, 6, 1, 20, 0, tzinfo=UTC)
@@ -99,3 +108,46 @@ def test_r16_existing_world_readable_db_is_tightened(tmp_path: Path) -> None:
     path.chmod(0o644)
     SQLiteMemoryStore(path).close()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+# -- R13: refractory against every trigger, not only the latest -------------------------
+def _one_memory_store(kind: str, tmp_path: Path) -> MemoryStore:
+    store: MemoryStore = (
+        InMemoryStore() if kind == "memory" else SQLiteMemoryStore(tmp_path / "r.db")
+    )
+    store.register_channel(ChannelSpec("geo", dim=3))
+    store.add(
+        Memory(
+            id="mem_a",
+            content="a",
+            fingerprint=SensoryFingerprint(
+                embeddings={"geo": (1.0, 0.0, 0.0)}, context=SensoryContext(T)
+            ),
+            created_at=T,
+        )
+    )
+    return store
+
+
+@pytest.mark.parametrize("kind", ["memory", "sqlite"])
+def test_r13_claim_checks_all_triggers_in_window(kind: str, tmp_path: Path) -> None:
+    store = _one_memory_store(kind, tmp_path)
+    period = timedelta(hours=6)
+    assert store.claim_trigger("mem_a", T + timedelta(hours=1), period)
+    assert store.claim_trigger("mem_a", T + timedelta(hours=100), period)  # out-of-order future
+    assert not store.claim_trigger("mem_a", T + timedelta(hours=2), period)  # 1 h after a fire
+    assert not store.claim_trigger("mem_a", T - timedelta(hours=4), period)  # 5 h before it
+    assert store.claim_trigger("mem_a", T - timedelta(hours=5), period)  # exactly 6 h: fires
+    assert store.claim_trigger("mem_a", T + timedelta(hours=2), timedelta(0))  # disabled
+    store.close()
+
+
+def test_r13_engine_out_of_order_cues(make_engine: EngineFactory) -> None:
+    eng = make_engine()
+    eng.remember("the cafe", context=SensoryContext(T, geohash=PARIS))
+
+    def fire(hours: int) -> int:
+        ctx = SensoryContext(T + timedelta(hours=hours), geohash=PARIS)
+        return len(eng.sense(eng.build_cue(context=ctx, include_time=False)))
+
+    assert [fire(1), fire(100), fire(2)] == [1, 1, 0]

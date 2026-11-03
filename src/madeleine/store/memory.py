@@ -149,9 +149,12 @@ class InMemoryStore:
             return max(times) if times else None
 
     def claim_trigger(self, memory_id: str, at: datetime, refractory_period: timedelta) -> bool:
-        """Atomically record a trigger unless the memory is refractory (engine fast path)."""
+        """Atomically record a trigger unless the memory is refractory: any recorded trigger
+        within ``refractory_period`` of ``at`` (not only the latest) blocks it."""
         with self._lock:
-            if is_refractory(self.last_triggered(memory_id), at, refractory_period):
+            self._check_open()
+            times = self._triggers.get(memory_id, ())
+            if any(is_refractory(t, at, refractory_period) for t in times):
                 return False
             self.record_trigger(memory_id, at)
             return True

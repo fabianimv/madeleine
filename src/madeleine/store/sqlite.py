@@ -46,7 +46,6 @@ from typing import Any
 
 import numpy as np
 
-from madeleine.core.fusion import is_refractory
 from madeleine.core.types import (
     ChannelName,
     ChannelSpec,
@@ -700,9 +699,14 @@ class SQLiteMemoryStore:
             return _last_trigger(conn, memory_id)
 
     def claim_trigger(self, memory_id: str, at: datetime, refractory_period: timedelta) -> bool:
-        """Atomically (across processes) record a trigger unless the memory is refractory."""
+        """Atomically (across processes) record a trigger unless the memory is refractory.
+
+        Refractory means *any* recorded trigger ``t`` with ``abs(at - t) < refractory_period``
+        (not only the latest one), so out-of-order and future-dated cues cannot re-open the
+        window (R13).
+        """
         with self._db.write() as conn:
-            if is_refractory(_last_trigger(conn, memory_id), at, refractory_period):
+            if _fired_within(conn, memory_id, at, refractory_period):
                 return False
             _insert_trigger(conn, memory_id, at)
             return True
@@ -728,6 +732,20 @@ def _insert_trigger(conn: sqlite3.Connection, memory_id: str, at: datetime) -> N
         "INSERT INTO triggers(memory_id, at, at_us) VALUES (?, ?, ?)",
         (memory_id, at.isoformat(), _micros(at)),
     )
+
+
+def _fired_within(
+    conn: sqlite3.Connection, memory_id: str, at: datetime, period: timedelta
+) -> bool:
+    """Whether a trigger exists strictly within ``period`` of ``at`` (range on the index)."""
+    if period <= timedelta(0):
+        return False
+    at_us, span = _micros(at), period // timedelta(microseconds=1)
+    row = conn.execute(
+        "SELECT 1 FROM triggers WHERE memory_id = ? AND at_us > ? AND at_us < ? LIMIT 1",
+        (memory_id, at_us - span, at_us + span),
+    ).fetchone()
+    return row is not None
 
 
 def _last_trigger(conn: sqlite3.Connection, memory_id: str) -> datetime | None:
