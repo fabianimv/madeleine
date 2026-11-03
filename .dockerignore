@@ -1,0 +1,17 @@
+.git
+.github
+.claude
+.venv
+**/__pycache__
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.hypothesis
+dist
+build
+tests
+examples
+docs
+*.db
+*.db-wal
+*.db-shm
