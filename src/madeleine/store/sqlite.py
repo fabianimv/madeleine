@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import sqlite3
+import stat
 import threading
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -147,6 +148,39 @@ def _micros(dt: datetime) -> int:
     return (dt - _EPOCH) // timedelta(microseconds=1)
 
 
+def _is_file_path(path: str) -> bool:
+    return path not in ("", ":memory:") and not path.startswith("file:")
+
+
+def _restrict_permissions(path: str) -> None:
+    """Make ``path`` owner-only (``0o600``), best effort (R16).
+
+    A missing file is created with that mode before SQLite opens it; an existing file that
+    is group/other accessible is tightened. SQLite creates the ``-wal`` / ``-shm`` siblings
+    with the main file's mode; they are tightened too if they already exist. No-op where
+    POSIX modes do not apply (Windows) or when the file is not ours to chmod.
+    """
+    if os.name == "nt" or not _is_file_path(path):
+        return
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        _log.debug("cannot pre-create %s owner-only: %s", path, exc)
+    else:
+        os.close(fd)
+    for name in (path, f"{path}-wal", f"{path}-shm"):
+        try:
+            mode = stat.S_IMODE(os.stat(name).st_mode)
+            if mode & 0o077:
+                os.chmod(name, mode & 0o700)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            _log.debug("cannot restrict permissions of %s: %s", name, exc)
+
+
 def _load_sqlite_vec(conn: sqlite3.Connection) -> str | None:
     """Try to load sqlite-vec into ``conn``; return ``None`` on success or the reason."""
     try:
@@ -183,6 +217,7 @@ class SQLiteDatabase:
         self._lock = threading.RLock()
         self._refs = 0
         self._closed = False
+        _restrict_permissions(self.path)
         try:
             self._conn = sqlite3.connect(
                 self.path,
@@ -201,6 +236,7 @@ class SQLiteDatabase:
             if self.path != ":memory:" and not self.path.startswith("file::memory:"):
                 conn.execute("PRAGMA journal_mode = WAL")
                 conn.execute("PRAGMA synchronous = NORMAL")
+                _restrict_permissions(self.path)
             self.vec_enabled = False
             if use_sqlite_vec is not False:
                 reason = _load_sqlite_vec(conn)

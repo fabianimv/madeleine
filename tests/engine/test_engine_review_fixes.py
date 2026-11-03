@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import os
+import sqlite3
+import stat
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from madeleine.core.types import MadeleineConfig, RawSignal, SensoryContext
+from madeleine.core.types import ChannelSpec, MadeleineConfig, RawSignal, SensoryContext
 from madeleine.engine import create_engine
 from madeleine.store import SQLiteDatabase, SQLiteMemoryStore, open_sqlite
 from madeleine.testing import FakeClock
@@ -63,3 +67,35 @@ def test_r7_secure_delete_pragma_on_every_connection(tmp_path: Path) -> None:
     with db.read() as conn:
         assert conn.execute("PRAGMA secure_delete").fetchone()[0] == 1
     db.acquire().release()
+
+
+# -- R16: owner-only database files ---------------------------------------------------
+@pytest.fixture
+def umask_022() -> Iterator[None]:
+    old = os.umask(0o022)
+    yield
+    os.umask(old)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.usefixtures("umask_022")
+def test_r16_new_db_and_wal_files_are_owner_only(tmp_path: Path) -> None:
+    path = tmp_path / "private.db"
+    store, queue = open_sqlite(path)
+    store.register_channel(ChannelSpec("text", dim=2))
+    files = _db_files(path)
+    assert {p.name for p in files} >= {"private.db", "private.db-wal", "private.db-shm"}
+    for p in files:
+        assert stat.S_IMODE(p.stat().st_mode) == 0o600, p.name
+    store.close()
+    queue.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.usefixtures("umask_022")
+def test_r16_existing_world_readable_db_is_tightened(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    sqlite3.connect(path).close()
+    path.chmod(0o644)
+    SQLiteMemoryStore(path).close()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
