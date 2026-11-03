@@ -4,9 +4,9 @@
 brings back a related memory on its own, without the agent having to ask. It works the way
 the taste of a madeleine brought back Proust's childhood.
 
-<!-- mcp-name: io.github.FabianIMV/madeleine -->
+<!-- mcp-name: io.github.fabianimv/madeleine -->
 
-[![CI](https://github.com/FabianIMV/madeleine/actions/workflows/ci.yml/badge.svg)](https://github.com/FabianIMV/madeleine/actions/workflows/ci.yml)
+[![CI](https://github.com/fabianimv/madeleine/actions/workflows/ci.yml/badge.svg)](https://github.com/fabianimv/madeleine/actions/workflows/ci.yml)
 · Python 3.11–3.13 · Apache-2.0 · local-first (SQLite) · MCP server + Python library
 
 Most agent memory is *voluntary*: the agent decides to search, writes a query, and gets

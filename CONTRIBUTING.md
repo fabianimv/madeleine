@@ -6,7 +6,7 @@ improvements are all welcome.
 ## Setup
 
 ```bash
-git clone https://github.com/FabianIMV/madeleine && cd madeleine
+git clone https://github.com/fabianimv/madeleine && cd madeleine
 uv sync                       # Python 3.11+; installs the dev group
 uv run madeleine demo         # sanity check, fully offline
 ```

@@ -46,9 +46,9 @@ madeleine = "madeleine.cli:app"
 madeleine-mcp = "madeleine.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/FabianIMV/madeleine"
-Repository = "https://github.com/FabianIMV/madeleine"
-Issues = "https://github.com/FabianIMV/madeleine/issues"
+Homepage = "https://github.com/fabianimv/madeleine"
+Repository = "https://github.com/fabianimv/madeleine"
+Issues = "https://github.com/fabianimv/madeleine/issues"
 
 [dependency-groups]
 dev = [

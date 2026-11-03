@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report vulnerabilities privately through GitHub's **"Report a vulnerability"** button
-(Security → Advisories) on <https://github.com/FabianIMV/madeleine>. Do not open a public
+(Security → Advisories) on <https://github.com/fabianimv/madeleine>. Do not open a public
 issue. We aim to acknowledge reports within 7 days. madeleine is pre-1.0, and only the latest
 release receives fixes.
 
