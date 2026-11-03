@@ -255,6 +255,9 @@ def main(
     except SystemExit as exc:  # --help
         if exc.code not in (0, None):
             _warn(f"exited with {exc.code}")
+    except urllib.error.HTTPError as exc:
+        hint = " (check --token / MADELEINE_API_TOKEN)" if exc.code == 401 else ""
+        _warn(f"madeleine server answered HTTP {exc.code}{hint}; no recollections injected")
     except urllib.error.URLError as exc:
         _warn(f"madeleine server unreachable ({exc.reason}); no recollections injected")
     except Exception as exc:
