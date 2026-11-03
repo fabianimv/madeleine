@@ -23,7 +23,10 @@ Modes:
   ``engine.pending_recollections()``;
 * remote: ``--url http://127.0.0.1:8765`` uses ``GET /recollections/pending`` and
   ``POST /recollections/drain`` of a running
-  ``madeleine serve --transport http`` (token: ``--token`` or ``MADELEINE_API_TOKEN``).
+  ``madeleine serve --transport http``. The bearer token comes from ``--token-file PATH``
+  or ``MADELEINE_API_TOKEN``; ``--token`` still works but is deprecated (it shows up in
+  ``ps`` and in settings files). Sending a token over plain ``http://`` to a non-loopback
+  host prints a warning.
 
 ``--sense-prompt`` first sends the prompt itself as a ``text`` cue, so what the user writes
 can trigger involuntary memories too. Only the standard library is imported (fast start).
@@ -104,7 +107,15 @@ def _parser() -> argparse.ArgumentParser:
         description="Claude Code UserPromptSubmit hook: inject queued madeleine recollections.",
     )
     p.add_argument("--url", help="drain a running madeleine HTTP server instead of the local DB")
-    p.add_argument("--token", help="bearer token for --url (default: $MADELEINE_API_TOKEN)")
+    p.add_argument(
+        "--token-file",
+        help="file holding the bearer token for --url (default: $MADELEINE_API_TOKEN)",
+    )
+    p.add_argument(
+        "--token",
+        help="DEPRECATED (visible in ps): bearer token for --url; use --token-file or "
+        "$MADELEINE_API_TOKEN",
+    )
     p.add_argument("--db", help="SQLite path in local mode (default: $MADELEINE_DB)")
     p.add_argument(
         "--sense-prompt",
@@ -274,8 +285,44 @@ def _line_from_json(item: Mapping[str, Any]) -> str:
     return f"[madeleine {score:.2f} via {via}] {memory.get('content', '')} ({day})"
 
 
+def _read_token_file(path: str) -> str:
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as fh:
+            token = fh.read().strip()
+    except OSError as exc:
+        raise ValueError(f"cannot read --token-file {path!r}: {exc.strerror or exc}") from None
+    if not token:
+        raise ValueError(f"--token-file {path!r} is empty")
+    return token
+
+
+def _resolve_token(args: argparse.Namespace) -> str | None:
+    """``--token-file``, else the deprecated ``--token``, else ``$MADELEINE_API_TOKEN``."""
+    if args.token is not None:
+        _warn(
+            "--token is deprecated (visible in ps and settings files); use --token-file "
+            "PATH or the MADELEINE_API_TOKEN environment variable"
+        )
+    if args.token_file:
+        if args.token is not None:
+            _warn("both --token-file and --token given; using --token-file")
+        return _read_token_file(args.token_file)
+    token = args.token or os.environ.get("MADELEINE_API_TOKEN") or ""
+    return token.strip() or None
+
+
+def _warn_if_cleartext(url: str, token: str | None) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if token and parsed.scheme == "http" and not _is_loopback(parsed.hostname):
+        _warn(
+            f"sending the API token over plain http:// to {parsed.hostname}; anyone on the "
+            "network can read it - use https:// or a loopback address"
+        )
+
+
 def _remote_lines(args: argparse.Namespace, prompt: str | None) -> list[str]:
-    token = args.token or os.environ.get("MADELEINE_API_TOKEN") or None
+    token = _resolve_token(args)
+    _warn_if_cleartext(args.url, token)
     if args.sense_prompt and prompt:
         try:
             _request(
@@ -352,7 +399,7 @@ def main(
         if exc.code not in (0, None):
             _warn(f"exited with {exc.code}")
     except urllib.error.HTTPError as exc:
-        hint = " (check --token / MADELEINE_API_TOKEN)" if exc.code == 401 else ""
+        hint = " (check --token-file / MADELEINE_API_TOKEN)" if exc.code == 401 else ""
         _warn(f"madeleine server answered HTTP {exc.code}{hint}; no recollections injected")
     except urllib.error.URLError as exc:
         _warn(f"madeleine server unreachable ({exc.reason}); no recollections injected")

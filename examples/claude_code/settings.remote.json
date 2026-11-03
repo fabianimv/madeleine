@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx madeleine-mcp hook claude-code --url http://127.0.0.1:8765 --sense-prompt",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

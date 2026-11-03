@@ -40,18 +40,30 @@ tool, the CLI) reach the next prompt.
 
 | Flag | Meaning |
 |---|---|
-| `--url http://127.0.0.1:8765` | Drain a running `madeleine serve --transport http` over HTTP instead of opening the database (stdlib only, fast). |
-| `--token TOKEN` | Bearer token for `--url` (default: `$MADELEINE_API_TOKEN`). |
+| `--url http://127.0.0.1:8765` | Take recollections from a running `madeleine serve --transport http` (`GET /recollections/pending`, then `POST /recollections/drain`) instead of opening the database (stdlib only, fast). |
+| `--token-file PATH` | File holding the bearer token for `--url`. Default: the `MADELEINE_API_TOKEN` environment variable. |
+| `--token TOKEN` | **Deprecated**: the token then shows up in `ps` and in your settings file. Still accepted, with a warning on stderr. |
 | `--db PATH` | Database path in local mode. |
 | `--sense-prompt` | First send the prompt itself as a `text` cue, so what you type can trigger involuntary memories, then drain. |
 | `--limit N` | Inject at most N recollections per prompt (default 5). |
 | `--timeout S` | HTTP timeout in seconds for `--url` (default 3). |
 
-Example, remote mode with prompt sensing:
+Example, remote mode with prompt sensing ([`settings.remote.json`](settings.remote.json)):
 
 ```json
 {"type": "command", "command": "uvx madeleine-mcp hook claude-code --url http://127.0.0.1:8765 --sense-prompt", "timeout": 10}
 ```
+
+If the server requires a token, do **not** put it in the command. Export it in the
+environment Claude Code is started from (hooks inherit it):
+
+```bash
+export MADELEINE_API_TOKEN="$(cat ~/.madeleine/token)"   # e.g. in ~/.profile
+```
+
+or add `--token-file ~/.madeleine/token` to the command (keep that file `chmod 600`). The
+hook warns on stderr when it would send the token over plain `http://` to a host that is not
+loopback: use `https://` (for example behind a reverse proxy) for a remote server.
 
 With `--sense-prompt` in local mode the text embedder runs inside the hook; with the
 `[text]` extra installed the first call loads the model, which can be slow. Prefer `--url`
