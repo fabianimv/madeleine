@@ -2,11 +2,13 @@
 :func:`hash_registry`.
 
 * :func:`default_registry` builds the senses listed in ``config.channels`` with their real
-  backends. Optional channels whose pip extra is missing (``image``, ``audio``) are skipped
-  with a logged warning - availability is checked with ``importlib.util.find_spec``, so
-  nothing heavy is imported. ``text`` always registers (it falls back to the hash
-  embedder under ``text_backend="auto"``). ``smell`` is skipped with a warning (future
-  work). Unknown names raise :class:`~madeleine.core.types.ChannelNotAvailableError`.
+  backends. Optional channels whose pip extra is missing (``image``, ``audio``) are
+  skipped and logged: INFO for the default channel list, WARNING when ``config.channels``
+  was set explicitly (e.g. via ``MADELEINE_CHANNELS``). Availability is checked with
+  ``importlib.util.find_spec``, so nothing heavy is imported. ``text`` always registers
+  (under ``text_backend="auto"`` it falls back to the hash embedder, logged once at INFO).
+  ``smell`` is skipped (future work). Unknown names raise
+  :class:`~madeleine.core.types.ChannelNotAvailableError`.
 * :func:`hash_registry` backs every ML channel with
   :class:`~madeleine.channels.hashing.HashEmbedder` and uses the real deterministic
   encoders for time/geo/biometric. It never downloads anything (tests, demo, evals).
@@ -122,10 +124,21 @@ class DefaultChannelRegistry:
         return f"DefaultChannelRegistry({list(self.names())})"
 
 
-def _optional(extra: str, name: ChannelName, build: Callable[[], Channel]) -> Channel | None:
+def _skip_level(config: MadeleineConfig) -> int:
+    """INFO when the default channel list is in use (a base install lacks the optional
+    extras, which is expected); WARNING when the channels were chosen explicitly
+    (``MADELEINE_CHANNELS`` / ``config.channels``), so a requested sense is never silently
+    missing."""
+    return logging.WARNING if config.channels != MadeleineConfig().channels else logging.INFO
+
+
+def _optional(
+    extra: str, name: ChannelName, build: Callable[[], Channel], *, level: int
+) -> Channel | None:
     missing = missing_modules(extra)
     if missing:
-        _log.warning(
+        _log.log(
+            level,
             "skipping channel %r: missing %s; %s",
             name,
             ", ".join(missing),
@@ -148,6 +161,7 @@ def default_registry(config: MadeleineConfig | None = None) -> DefaultChannelReg
     must be sent as bytes).
     """
     cfg = config or MadeleineConfig()
+    level = _skip_level(cfg)
     registry = DefaultChannelRegistry()
     for name in dict.fromkeys(cfg.channels):
         channel: Channel | None
@@ -164,15 +178,17 @@ def default_registry(config: MadeleineConfig | None = None) -> DefaultChannelReg
                 "image",
                 IMAGE,
                 lambda: make_image_channel(cfg, allow_local_files=cfg.allow_local_files),
+                level=level,
             )
         elif name == AUDIO:
             channel = _optional(
                 "audio",
                 AUDIO,
                 lambda: make_audio_channel(cfg, allow_local_files=cfg.allow_local_files),
+                level=level,
             )
         elif name == SMELL:
-            _log.warning("skipping channel 'smell': %s", SMELL_UNAVAILABLE)
+            _log.log(level, "skipping channel 'smell': %s", SMELL_UNAVAILABLE)
             channel = None
         else:
             raise _unknown(name)

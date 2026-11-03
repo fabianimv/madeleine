@@ -217,7 +217,7 @@ def _resolve_backend(backend: TextBackend) -> TextBackend:
     with _warn_lock:
         if not _auto_fallback_warned:
             _auto_fallback_warned = True
-            _log.warning(
+            _log.info(
                 "sentence-transformers is not installed: text recall uses the offline lexical "
                 "hash embedder. For semantic text recall: pip install 'madeleine-mcp[text]'"
             )

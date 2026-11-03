@@ -37,11 +37,13 @@ offline = hash_registry()                   # HashEmbedder for text/image/audio;
 
 * `default_registry(config)` registers `config.channels`. `image`/`audio` are registered
   only if their extra is installed, which it checks with `importlib.util.find_spec` (this
-  never imports torch). If the extra is missing, the channel is skipped and a warning is
-  logged. `text` is always registered. `smell` is skipped with a warning. An unknown name
-  raises `ChannelNotAvailableError`.
+  never imports torch). If the extra is missing, the channel is skipped with a log line:
+  INFO for the default channel list (a base install is expected to lack the extras),
+  WARNING when the channels were chosen explicitly (`MADELEINE_CHANNELS` /
+  `config.channels`). `text` is always registered. `smell` is skipped the same way. An
+  unknown name raises `ChannelNotAvailableError`.
 * `text_backend`: `"auto"` uses sentence-transformers if it is installed, and otherwise
-  the hash embedder (with one warning per process). `"hash"` always uses the hash
+  the hash embedder (logged once per process, at INFO). `"hash"` always uses the hash
   embedder. `"sentence-transformers"` requires the library, and the first `embed` raises
   if it is missing.
 * `hash_registry(channels=..., dim=256, *, allow_local_files=False)` uses `HashEmbedder`
