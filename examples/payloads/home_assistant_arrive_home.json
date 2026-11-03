@@ -1,0 +1,10 @@
+{
+  "event": "zone.enter",
+  "entity_id": "person.ana",
+  "state": "home",
+  "zone": "Home",
+  "attributes": {"friendly_name": "Ana"},
+  "latitude": "48.8584",
+  "longitude": "2.2945",
+  "time_fired": "2026-06-01T18:45:00+02:00"
+}

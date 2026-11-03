@@ -1,0 +1,11 @@
+{
+  "signals": [
+    {"channel": "text", "value": "smell of fresh bread and coffee"},
+    {"channel": "biometric", "value": {"heart_rate": 88, "skin_temp": 33.4}}
+  ],
+  "at": "2026-06-01T08:15:00+02:00",
+  "lat": 48.8566,
+  "lon": 2.3522,
+  "tags": ["morning-walk"],
+  "source": "curl"
+}

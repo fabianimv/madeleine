@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx madeleine-mcp hook claude-code",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

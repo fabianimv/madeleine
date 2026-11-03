@@ -1,0 +1,12 @@
+{
+  "event": "state_changed",
+  "entity_id": "media_player.kitchen",
+  "state": "playing",
+  "old_state": "idle",
+  "attributes": {
+    "friendly_name": "Kitchen speaker",
+    "media_title": "Clair de lune",
+    "media_artist": "Claude Debussy"
+  },
+  "time_fired": "2026-06-01T21:30:00+02:00"
+}

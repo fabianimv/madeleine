@@ -1,0 +1,63 @@
+# madeleine <- Home Assistant
+#
+# Merge into your configuration.yaml. Assumes madeleine runs on another machine:
+#   MADELEINE_API_TOKEN=change-me madeleine serve --transport http --host 0.0.0.0 --port 8765
+# and secrets.yaml contains:
+#   madeleine_auth: "Bearer change-me"
+#
+# Syntax is Home Assistant 2024.10+ (`triggers:` / `trigger:` / `actions:` / `action:`).
+# Older versions use `trigger:` / `platform:` / `action:` / `service:`.
+
+rest_command:
+  madeleine_cue:
+    url: "http://192.168.1.20:8765/cues/home_assistant"
+    method: POST
+    headers:
+      Authorization: !secret madeleine_auth
+    content_type: "application/json"
+    timeout: 10
+    # The automation passes a `payload` dictionary; send it as JSON.
+    payload: "{{ payload | to_json }}"
+
+automation:
+  # 1. Arriving in the home zone -> "Ana arrived home" + where + when.
+  - alias: "madeleine: arriving home"
+    triggers:
+      - trigger: zone
+        entity_id: person.ana
+        zone: zone.home
+        event: enter
+    actions:
+      - action: rest_command.madeleine_cue
+        data:
+          payload:
+            event: zone.enter
+            entity_id: "{{ trigger.entity_id }}"
+            state: "{{ trigger.to_state.state }}"
+            zone: "{{ trigger.zone.attributes.friendly_name }}"
+            attributes:
+              friendly_name: "{{ trigger.to_state.name }}"
+            latitude: "{{ trigger.to_state.attributes.latitude }}"
+            longitude: "{{ trigger.to_state.attributes.longitude }}"
+            # Local-offset timestamp: "hour of day" is computed in this offset.
+            time_fired: "{{ now().isoformat() }}"
+
+  # 2. Media starts playing -> "Kitchen speaker started playing Clair de lune by Debussy".
+  - alias: "madeleine: music starts playing"
+    triggers:
+      - trigger: state
+        entity_id: media_player.kitchen
+        to: playing
+    actions:
+      - action: rest_command.madeleine_cue
+        data:
+          payload:
+            event: state_changed
+            entity_id: "{{ trigger.entity_id }}"
+            state: "{{ trigger.to_state.state }}"
+            old_state: "{{ trigger.from_state.state if trigger.from_state else '' }}"
+            attributes:
+              friendly_name: "{{ trigger.to_state.name }}"
+              media_title: "{{ trigger.to_state.attributes.media_title | default('') }}"
+              media_artist: "{{ trigger.to_state.attributes.media_artist | default('') }}"
+            time_fired: "{{ now().isoformat() }}"

@@ -1,0 +1,7 @@
+{
+  "signals": [
+    {"channel": "image", "data_b64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "mime_type": "image/png"}
+  ],
+  "geohash": "u09tunq",
+  "source": "curl"
+}
