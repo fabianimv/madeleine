@@ -68,6 +68,7 @@ _KNOWN_DIMS: Final[dict[str, int]] = {
 }
 
 text_similarity: Final = cosine01
+"""``max(0, cosine)``: the similarity for sentence-transformers text embeddings."""
 
 HASH_TEXT_COSINE_RANGE: Final = (0.10, 0.45)
 """Calibration of the lexical hash embedder's compressed cosine scale.
@@ -80,7 +81,8 @@ of. ``rescaled_cosine(0.10, 0.45)`` maps "unrelated" to ~0 and "paraphrase" to ~
 the same treatment CLIP/CLAP get for their (opposite) compression.
 """
 hash_text_similarity: Final = rescaled_cosine(*HASH_TEXT_COSINE_RANGE)
-"""``max(0, cosine)``."""
+"""Cosine mapped from ``[0.10, 0.45]`` to ``[0, 1]`` (clamped): the similarity for the
+hash text backend (see :data:`HASH_TEXT_COSINE_RANGE`)."""
 
 _auto_fallback_warned = False
 _warn_lock = threading.Lock()
@@ -215,7 +217,7 @@ def _resolve_backend(backend: TextBackend) -> TextBackend:
     with _warn_lock:
         if not _auto_fallback_warned:
             _auto_fallback_warned = True
-            _log.warning(
+            _log.info(
                 "sentence-transformers is not installed: text recall uses the offline lexical "
                 "hash embedder. For semantic text recall: pip install 'madeleine-mcp[text]'"
             )

@@ -30,6 +30,7 @@ from madeleine.core.types import (
     ChannelName,
     ChannelNotAvailableError,
     ChannelRegistry,
+    ChannelSpec,
     Clock,
     Cue,
     MadeleineConfig,
@@ -60,6 +61,22 @@ _log = logging.getLogger(__name__)
 @runtime_checkable
 class _Closeable(Protocol):
     def close(self) -> None: ...
+
+
+@runtime_checkable
+class _ChannelChecker(Protocol):
+    """Optional store extension: read-only ``register_channel`` check (R30)."""
+
+    def check_channel(self, spec: ChannelSpec) -> bool: ...
+
+
+@runtime_checkable
+class _TaggedNearest(Protocol):
+    """Optional store extension: KNN restricted to memories having all ``tags`` (R9)."""
+
+    def nearest_tagged(
+        self, channel: ChannelName, vector: Vector, k: int, tags: frozenset[str]
+    ) -> list[tuple[str, float]]: ...
 
 
 def _to_f32(vector: Sequence[float], channel: Channel) -> Vector:
@@ -114,7 +131,7 @@ class Madeleine:
         self._owns_queue = owns_queue
         self._registered: set[ChannelName] = set()
         self._register_lock = threading.Lock()
-        self._push_lock = threading.Lock()
+        self._push_lock = threading.RLock()  # re-entrant: queue listeners may call forget
         self._closed = False
 
     # -- protocol properties -------------------------------------------------------------
@@ -207,6 +224,23 @@ class Madeleine:
                     self._store.register_channel(self._channel(name).spec)
                     self._registered.add(name)
 
+    def _searchable(self, names: Collection[ChannelName]) -> list[ChannelName]:
+        """Channels worth a KNN query, without writing anything (R30).
+
+        Read paths never register channels: a channel this engine has not registered is
+        only *checked* (``StoreError`` if the store holds vectors from another model/dim);
+        a channel the store does not know (or holds no vectors for under this spec) has no
+        candidates. Stores without ``check_channel`` are queried as is.
+        """
+        store = self._store
+        if not isinstance(store, _ChannelChecker):
+            return list(names)
+        return [
+            name
+            for name in names
+            if name in self._registered or store.check_channel(self._channel(name).spec)
+        ]
+
     # -- MemoryEngine --------------------------------------------------------------------
     def build_cue(
         self,
@@ -268,6 +302,7 @@ class Madeleine:
         *,
         channels: frozenset[ChannelName] | None,
         tags: frozenset[str] | None,
+        k: int,
     ) -> list[ScoredMemory]:
         """Candidate generation (per-channel KNN union) then exact fusion; unsorted."""
         recall = self._config.recall
@@ -286,11 +321,8 @@ class Madeleine:
             vectors[name] = self._embed(channel, obs)
         if not vectors:
             return []
-        self._ensure_registered(vectors)
-        candidate_ids: dict[str, None] = {}
-        for name, vec in vectors.items():
-            for memory_id, _dist in self._store.nearest(name, vec, recall.candidate_k):
-                candidate_ids[memory_id] = None
+        searchable = {name: vectors[name] for name in self._searchable(vectors)}
+        candidate_ids = self._candidates(searchable, max(recall.candidate_k, k), tags)
         memories = self._store.get_many(list(candidate_ids))
         now = cue.context.timestamp
         out: list[ScoredMemory] = []
@@ -302,11 +334,32 @@ class Madeleine:
                 out.append(scored)
         return out
 
+    def _candidates(
+        self, vectors: Mapping[ChannelName, Vector], k: int, tags: frozenset[str] | None
+    ) -> dict[str, None]:
+        """Union of per-channel nearest neighbours (insertion-ordered ids).
+
+        ``k`` per channel is ``max(candidate_k, requested results)``. With ``tags`` the KNN
+        runs over the tagged subset only (``nearest_tagged`` when the store has it, else
+        every tagged memory is a candidate), so tagged matches are never starved (R9).
+        """
+        store = self._store
+        out: dict[str, None] = {}
+        if tags and not isinstance(store, _TaggedNearest):
+            return dict.fromkeys(m.id for m in store.iter_memories(tags=tags))
+        for name, vec in vectors.items():
+            if tags and isinstance(store, _TaggedNearest):
+                hits = store.nearest_tagged(name, vec, k, tags)
+            else:
+                hits = store.nearest(name, vec, k)
+            out.update(dict.fromkeys(memory_id for memory_id, _dist in hits))
+        return out
+
     def recall(self, query: RecallQuery) -> list[ScoredMemory]:
         floor = (
             query.min_score if query.min_score is not None else self._config.recall.pull_threshold
         )
-        scored = self._score(query.cue, channels=query.channels, tags=query.tags)
+        scored = self._score(query.cue, channels=query.channels, tags=query.tags, k=query.k)
         return rank([s for s in scored if s.score >= floor])[: query.k]
 
     def sense(self, cue: Cue) -> list[Recollection]:
@@ -315,7 +368,7 @@ class Madeleine:
         eligible = rank(
             [
                 s
-                for s in self._score(cue, channels=None, tags=None)
+                for s in self._score(cue, channels=None, tags=None, k=recall.max_push_per_cue)
                 if push_eligible(s, solo, recall)
             ]
         )
@@ -327,19 +380,20 @@ class Madeleine:
                     break
                 if not self._claim(scored.memory.id, at):
                     continue
-                fired.append(
-                    Recollection(
-                        id=new_id("rec"),
-                        match=scored,
-                        cue_id=cue.id,
-                        cue_channels=cue.channels,
-                        triggered_at=at,
-                        mode=RecallMode.PUSH,
-                        cue_source=cue.source,
-                    )
+                rec = Recollection(
+                    id=new_id("rec"),
+                    match=scored,
+                    cue_id=cue.id,
+                    cue_channels=cue.channels,
+                    triggered_at=at,
+                    mode=RecallMode.PUSH,
+                    cue_source=cue.source,
                 )
-        for rec in fired:
-            self._queue.put(rec)
+                # Enqueued under the push lock so an in-process ``forget`` cannot slip in
+                # between the claim and the put (R15). Across processes, the store refuses to
+                # claim a deleted memory and the SQLite queue refuses orphans.
+                self._queue.put(rec)
+                fired.append(rec)
         if fired:
             _log.debug("cue %s fired %d recollection(s)", cue.id, len(fired))
         return fired
@@ -354,8 +408,11 @@ class Madeleine:
         return self._queue.drain(limit) if drain else self._queue.peek(limit)
 
     def forget(self, memory_id: str) -> bool:
-        existed = self._store.delete(memory_id)
-        self._queue.discard_memory(memory_id)
+        """Delete a memory everywhere. Serialised with ``sense`` in this process; the SQLite
+        store also removes the memory's queue rows in its delete transaction."""
+        with self._push_lock:
+            existed = self._store.delete(memory_id)
+            self._queue.discard_memory(memory_id)
         return existed
 
     def close(self) -> None:
@@ -387,8 +444,10 @@ def create_engine(
     * ``registry`` ``None`` -> ``madeleine.channels.registry.default_registry(config)``
       (imported lazily).
     * ``store`` / ``queue`` ``None`` -> SQLite at ``resolve_db_path(config.db_path)``; when
-      both are created here they share one connection (so ``":memory:"`` works). Whatever
-      the engine creates, ``close()`` closes.
+      both are created here they share one connection (so ``":memory:"`` works). With an
+      injected store and no queue, the queue shares the store's SQLite database, or is
+      in-process for other stores (queued recollections are rehydrated from the store's
+      file). Whatever the engine creates, ``close()`` closes.
     """
     from madeleine.config import resolve_db_path
     from madeleine.store.sqlite import SQLiteDatabase, SQLiteMemoryStore, SQLiteRecollectionQueue
@@ -398,12 +457,21 @@ def create_engine(
         registry = cast(ChannelRegistry, module.default_registry(config))
     owns_store = store is None
     owns_queue = queue is None
-    if store is None or queue is None:
+    if store is None:
         db = SQLiteDatabase(resolve_db_path(config.db_path))
-        if store is None:
-            store = SQLiteMemoryStore(db)
+        store = SQLiteMemoryStore(db)
         if queue is None:
             queue = SQLiteRecollectionQueue(db)
+    elif queue is None:
+        # The SQLite queue rehydrates memories from its own file (R20), so it must share the
+        # injected store's database; any other store gets an in-process queue.
+        if isinstance(store, SQLiteMemoryStore):
+            queue = SQLiteRecollectionQueue(store.database)
+        else:
+            from madeleine.store.memory import InMemoryRecollectionQueue
+
+            _log.info("injected non-SQLite store: using an in-process recollection queue")
+            queue = InMemoryRecollectionQueue()
     return Madeleine(
         config,
         registry=registry,

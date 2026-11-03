@@ -2,9 +2,11 @@
 
 * **Adapter** - encoded bytes (WAV/FLAC/OGG, anything ``soundfile`` decodes; ``mime_type``
   given or sniffed), raw 16-bit PCM (``mime_type="audio/L16; rate=16000"`` big-endian per
-  RFC 2586, or ``"audio/pcm; rate=16000"`` little-endian; optional ``channels=N``), or a
-  local reference (``uri=`` / string value: ``file://`` or a path). Remote URLs are
-  rejected. Raw PCM sets ``numbers["sample_rate"]`` (and ``numbers["channels"]``).
+  RFC 2586, or ``"audio/pcm; rate=16000"`` little-endian; optional ``channels=N``), or,
+  only with ``allow_local_files=True``, a local reference (``uri=`` / string value:
+  ``file://`` or a path; refused by default without touching the filesystem). Remote URLs
+  are always rejected. Files are capped at ``MAX_MEDIA_BYTES``. Raw PCM sets
+  ``numbers["sample_rate"]`` (and ``numbers["channels"]``).
 * **Embedder** - :class:`ClapEmbedder` (``[audio]`` extra; ``laion/clap-htsat-unfused``
   via ``transformers``' ``ClapModel``/``ClapProcessor``, 512-d, ~600 MB download on first
   use). Audio is mixed down to mono, **resampled to 48 kHz** (the rate CLAP was trained
@@ -29,16 +31,17 @@ from typing import Any, Final
 
 from madeleine.channels._extras import import_extra
 from madeleine.channels._media import (
+    MAX_MEDIA_BYTES,
     base_mime,
+    check_uri_label,
+    checked_local_file,
     coerce_bytes,
     guess_mime_from_path,
-    local_path,
     mime_params,
     normalize_file_uri,
     sniff_audio_mime,
 )
 from madeleine.channels.hashing import HashEmbedder
-from madeleine.channels.image import MAX_MEDIA_BYTES
 from madeleine.channels.similarity import cosine01, describe_similarity, rescaled_cosine
 from madeleine.core.types import (
     AUDIO,
@@ -93,10 +96,21 @@ def _positive_int(text: str | None, what: str) -> int | None:
 
 
 class AudioAdapter:
-    """Encoded/raw-PCM bytes or a local ``uri``/path -> audio observation."""
+    """Encoded/raw-PCM bytes or a local ``uri``/path -> audio observation.
 
-    def __init__(self, *, max_bytes: int = MAX_MEDIA_BYTES) -> None:
+    ``allow_local_files`` (default **False**) gates every local file reference: a
+    ``file://``/path ``uri`` or string ``value``, and a local ``uri`` sent alongside bytes.
+    """
+
+    def __init__(
+        self, *, max_bytes: int = MAX_MEDIA_BYTES, allow_local_files: bool = False
+    ) -> None:
         self._max_bytes = max_bytes
+        self._allow_local_files = allow_local_files
+
+    @property
+    def allow_local_files(self) -> bool:
+        return self._allow_local_files
 
     @property
     def channel(self) -> ChannelName:
@@ -115,7 +129,9 @@ class AudioAdapter:
         ref = (signal.value if isinstance(signal.value, str) else None) or signal.uri
         if not ref:
             raise ObservationError("audio signal needs bytes or a file uri")
-        uri, path = normalize_file_uri(ref, AUDIO)
+        uri, path = normalize_file_uri(
+            ref, AUDIO, allow_local_files=self._allow_local_files, max_bytes=self._max_bytes
+        )
         mime = base_mime(signal.mime_type) or guess_mime_from_path(path)
         if mime is not None and not mime.startswith("audio/"):
             raise ObservationError(f"audio file has non-audio mime_type {mime!r}")
@@ -134,6 +150,7 @@ class AudioAdapter:
             )
         if not mime.startswith("audio/"):
             raise ObservationError(f"audio signal has non-audio mime_type {mime!r}")
+        check_uri_label(signal.uri, AUDIO, allow_local_files=self._allow_local_files)
         if mime in _RAW_PCM:
             params = mime_params(signal.mime_type)
             rate = _positive_int(params.get("rate"), "rate")
@@ -189,7 +206,7 @@ def decode_audio(observation: Observation) -> tuple[Any, int]:
     if observation.data is not None:
         source: Any = io.BytesIO(observation.data)
     elif observation.uri is not None:
-        source = str(local_path(observation.uri, AUDIO))
+        source = str(checked_local_file(observation.uri, AUDIO))
     else:
         raise ObservationError("audio observation has neither data nor uri")
     try:
@@ -288,13 +305,17 @@ def make_audio_channel(
     *,
     embedder: Embedder | None = None,
     similarity: SimilarityFn | None = None,
+    allow_local_files: bool | None = None,
 ) -> Channel:
     """The ``audio`` channel.
 
     Defaults to :class:`ClapEmbedder` for ``config.audio_model`` with
     :data:`audio_similarity`; a ``HashEmbedder`` defaults to ``cosine01``.
+    ``allow_local_files`` (default ``config.allow_local_files``, itself False) is passed to
+    :class:`AudioAdapter`.
     """
     cfg = config or MadeleineConfig()
+    allow = cfg.allow_local_files if allow_local_files is None else allow_local_files
     if embedder is None:
         embedder = ClapEmbedder(cfg.audio_model)
     if similarity is None:
@@ -308,4 +329,5 @@ def make_audio_channel(
         model_id=embedder.model_id,
         extra="audio" if isinstance(embedder, ClapEmbedder) else None,
     )
-    return Channel(spec=spec, adapter=AudioAdapter(), embedder=embedder, similarity=similarity)
+    adapter = AudioAdapter(allow_local_files=allow)
+    return Channel(spec=spec, adapter=adapter, embedder=embedder, similarity=similarity)

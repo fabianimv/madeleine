@@ -244,8 +244,16 @@ async def test_structured_content_mirrors_text(engine: FakeEngine, mode: str) ->
         ("sense", {"text": "a", "signals": [{"channel": "text", "value": "b"}]}, "more than one"),
         ("sense", {"signals": [{"channel": "text", "valu": "typo"}]}, "valu"),
         ("recall", {}, "at least one"),
+        ("sense", {}, "cue is empty"),
+        ("sense", {"at": "2026-06-01T21:30:00+02:00"}, "cue is empty"),
+        ("sense", {"text": "x", "source": "s" * 65}, "source"),
+        ("sense", {"text": "x", "source": ""}, "source"),
+        ("remember", {"content": "x", "metadata": {"k": 1}}, "metadata"),
         ("recall", {"query": "x", "k": 0}, "k"),
         ("pending_recollections", {"limit": 0}, "limit"),
+        ("pending_recollections", {"limit": 1001}, "limit"),
+        ("pending_recollections", {"limit": 10**20}, "limit"),
+        ("recall", {"query": "x", "k": 101}, "k"),
         ("forget", {}, "memory_id"),
     ],
 )
@@ -300,3 +308,51 @@ async def test_tool_defaults_use_the_engine_clock(engine: FakeEngine, clock: Fak
         await call(c, "remember", {"content": "Eiffel tower"})
         fired = await call(c, "sense", {"text": "Eiffel tower"})
         assert fired[0]["triggered_at"] == clock.now().isoformat()
+
+
+async def test_tool_defaults_read_engine_now_without_building_cues(
+    engine: FakeEngine, clock: FakeClock
+) -> None:
+    """R29: "now" comes from ``engine.now()``, not from a throwaway cue."""
+    built: list[str] = []
+    real_build = engine.build_cue
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        built.append(str(kwargs.get("source")))
+        return real_build(*args, **kwargs)
+
+    engine.build_cue = spy  # type: ignore[method-assign]
+    clock.advance(timedelta(days=1))
+    async with Client(create_server(engine)) as c:
+        mem = await call(c, "remember", {"content": "x"})
+        assert mem["context"]["timestamp"] == clock.now().isoformat()
+        await call(c, "recall", {"query": "x"})
+        await call(c, "sense", {"text": "x"})
+    assert built == ["mcp", "mcp"]  # one cue per recall/sense, none just to read the clock
+
+
+async def test_mcp_matches_http_surface(engine: FakeEngine, mode: str) -> None:
+    """R18: metadata on remember, prompt_line on recollections, source up to 64 chars."""
+    async with connect(engine, mode) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        assert "metadata" in tools["remember"].input_schema["properties"]
+        mem = await call(
+            client, "remember", {"content": "Ana proposed", "metadata": {"app": "notes"}}
+        )
+        assert mem["metadata"] == {"app": "notes"}
+        fired = await call(client, "sense", {"text": "Ana proposed", "source": "s" * 64})
+        assert fired
+        assert fired[0]["prompt_line"].startswith("[madeleine ")
+        assert "Ana proposed" in fired[0]["prompt_line"]
+        resource = await client.read_resource(PENDING_URI)
+        contents = resource.contents[0]
+        assert isinstance(contents, TextResourceContents)
+        assert json.loads(contents.text)[0]["prompt_line"] == fired[0]["prompt_line"]
+        drained = await call(client, "pending_recollections")
+        assert drained[0]["prompt_line"] == fired[0]["prompt_line"]
+        # recall still rejects unknown channels (HTTP is to be aligned on this).
+        assert "unknown channel" in await call_error(
+            client, "recall", {"query": "Ana", "channels": ["nope"]}
+        )
+        # A location alone is a valid cue.
+        assert await call(client, "sense", {"geohash": EIFFEL}) == []

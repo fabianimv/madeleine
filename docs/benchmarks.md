@@ -186,10 +186,10 @@ R@k = capped recall@k of PULL recall; precision = relevant fires / all fires; hi
 
 | operation | n | p50 | p95 | mean | max |
 |---|---:|---:|---:|---:|---:|
-| remember | 500 | 0.52 | 0.82 | 0.63 | 6.85 |
-| build_cue | 300 | 0.09 | 0.15 | 0.10 | 0.37 |
-| recall | 300 | 18.23 | 39.06 | 17.77 | 42.61 |
-| sense | 300 | 18.13 | 39.91 | 18.39 | 64.07 |
+| remember | 500 | 0.37 | 0.59 | 0.41 | 2.96 |
+| build_cue | 300 | 0.06 | 0.11 | 0.07 | 0.26 |
+| recall | 300 | 10.57 | 20.24 | 11.59 | 29.62 |
+| sense | 300 | 10.68 | 22.56 | 11.88 | 51.49 |
 
 ### Habituation
 
@@ -233,7 +233,7 @@ seed 3 R@1 0.716, precision 0.748, hit rate 0.559, false-trigger 0.000.
   maps any change of bytes to an unrelated vector. Real CLIP/CLAP embedders are needed for
   "a similar photo" or "the same song, re-recorded".
 * Latency is dominated by pure-Python similarity over up to 64 candidates per channel;
-  p95 ≈ 40 ms for `sense` with 500 memories.
+  p95 ≈ 23 ms for `sense` with 500 memories.
 
 ### Calibration note (hash text backend)
 

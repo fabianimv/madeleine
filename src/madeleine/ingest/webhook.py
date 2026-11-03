@@ -27,7 +27,7 @@ from datetime import datetime
 from typing import Any
 
 from madeleine.core import serde
-from madeleine.core.types import Clock, ObservationError, RawSignal, SensoryContext, SystemClock
+from madeleine.core.types import Clock, RawSignal, SensoryContext, SystemClock
 from madeleine.ingest import _fields as f
 
 __all__ = ["GenericWebhookAdapter", "parse_generic_payload"]
@@ -38,15 +38,9 @@ def parse_generic_payload(
 ) -> tuple[list[RawSignal], SensoryContext | None]:
     """Parse the generic cue JSON into raw signals and a context (``None`` = engine "now").
 
-    Raises :class:`ObservationError` for malformed fields or an empty cue.
+    Raises :class:`~madeleine.core.types.ObservationError` for malformed fields or an empty cue.
     """
-    raw_signals = payload.get("signals")
-    if raw_signals is not None and not isinstance(raw_signals, list):
-        raise ObservationError("'signals' must be a list of signal objects")
-    items = raw_signals or []
-    for item in items:
-        if not isinstance(item, Mapping):
-            raise ObservationError("each signal must be an object with a 'channel'")
+    items = f.check_signal_items(payload.get("signals"))
     signals = serde.signals_from_json(items, now=now)
     signals = f.merge_convenience_signals(
         signals,

@@ -550,7 +550,9 @@ class RecallConfig:
     refractory_period: timedelta = timedelta(hours=6)
     max_push_per_cue: int = 3
     candidate_k: int = 64
-    """How many nearest neighbours to fetch per channel before fusion."""
+    """Approximation knob: nearest neighbours fetched per cue channel before exact fusion.
+    The engine fetches ``max(candidate_k, query.k)`` per channel; a ``tags`` filter is applied
+    before candidate generation, so tagged matches cannot be starved."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "channel_weights", _freeze_mapping(self.channel_weights))
@@ -591,6 +593,11 @@ class MadeleineConfig:
       lazily on first use (never at import).
     * ``store_raw`` - default for persisting raw media bytes. **False**: only embeddings
       and metadata are stored.
+    * ``allow_local_files`` - whether media signals may reference files on the server's
+      disk (``file://`` URIs or bare paths, in ``uri`` *or* ``value``). **False** by
+      default: every surface (MCP, HTTP, webhooks) must send bytes (``data_b64``). Enforced
+      by the media channels' adapters themselves, so no input path can bypass it. Env:
+      ``MADELEINE_ALLOW_LOCAL_FILES``; CLI: ``serve --allow-file-uris``.
     * ``recall`` - fusion parameters.
     """
 
@@ -601,6 +608,7 @@ class MadeleineConfig:
     image_model: str = "ViT-B-32/laion2b_s34b_b79k"
     audio_model: str = "laion/clap-htsat-unfused"
     store_raw: bool = False
+    allow_local_files: bool = False
     recall: RecallConfig = field(default_factory=RecallConfig)
 
 
@@ -784,7 +792,9 @@ class MemoryStore(Protocol):
         ...
 
     def delete(self, memory_id: str) -> bool:
-        """Delete memory, vectors, raw data and trigger history. False if it did not exist."""
+        """Delete memory, vectors, raw data and trigger history (and, for the SQLite store,
+        the memory's queued recollections in the same transaction). Freed pages are zeroed
+        (``secure_delete``). False if it did not exist."""
         ...
 
     def iter_memories(self, *, tags: frozenset[str] | None = None) -> Iterator[Memory]:
@@ -810,8 +820,9 @@ class MemoryStore(Protocol):
         ...
 
     def claim_trigger(self, memory_id: str, at: datetime, refractory_period: timedelta) -> bool:
-        """Atomically record a trigger at ``at`` unless the memory is refractory
-        (``abs(at - last) < refractory_period``). Returns whether it was recorded. Must be
+        """Atomically record a trigger at ``at`` unless the memory is refractory, i.e. ANY
+        recorded trigger ``t`` has ``abs(at - t) < refractory_period``. Returns whether it was
+        recorded; ``False`` (and nothing recorded) if the memory does not exist. Must be
         atomic across processes sharing the store, so two engines never double-fire."""
         ...
 
@@ -829,6 +840,10 @@ class RecollectionQueue(Protocol):
     The reference implementation persists to the same SQLite file as the store so that
     separate processes (HTTP ingestion, a stdio MCP server, a Claude Code hook) share it.
     ``drain`` is atomic: a recollection is delivered to exactly one drainer.
+
+    Rows hold only the memory id and the score explanation; ``peek``/``drain`` rehydrate the
+    memory from the store, so the SQLite queue must share its file with the store. A
+    recollection whose memory no longer exists is dropped (``put`` ignores it).
     """
 
     def put(self, recollection: Recollection) -> None:

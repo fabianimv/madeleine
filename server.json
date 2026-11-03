@@ -1,10 +1,10 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.FabianIMV/madeleine",
+  "name": "io.github.fabianimv/madeleine",
   "title": "madeleine",
   "description": "Involuntary memory for agents: time, place, sound and IoT cues surface memories unasked",
   "repository": {
-    "url": "https://github.com/FabianIMV/madeleine",
+    "url": "https://github.com/fabianimv/madeleine",
     "source": "github"
   },
   "version": "0.1.0",

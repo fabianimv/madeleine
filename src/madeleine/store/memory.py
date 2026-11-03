@@ -78,6 +78,29 @@ class InMemoryStore:
             self._specs[spec.name] = spec
             self._vectors.setdefault(spec.name, {})
 
+    def check_channel(self, spec: ChannelSpec) -> bool:
+        """Read-only counterpart of :meth:`register_channel` (for recall paths, R30).
+
+        ``True`` if ``spec`` is registered as is; ``False`` if the channel is unknown or holds
+        no vectors under a different ``dim``/``model_id`` (nothing to match: treat as
+        empty). Raises :class:`StoreError` exactly where :meth:`register_channel` would.
+        Never writes.
+        """
+        with self._lock:
+            self._check_open()
+            known = self._specs.get(spec.name)
+            if known is None:
+                return False
+            if (known.dim, known.model_id) == (spec.dim, spec.model_id):
+                return True
+            if self._vectors.get(spec.name):
+                raise StoreError(
+                    f"channel {spec.name!r} holds vectors with dim={known.dim}, "
+                    f"model_id={known.model_id!r}; cannot use dim={spec.dim}, "
+                    f"model_id={spec.model_id!r}"
+                )
+            return False
+
     def add(self, memory: Memory) -> None:
         with self._lock:
             self._check_open()
@@ -137,6 +160,27 @@ class InMemoryStore:
             matrix = np.stack([vecs[i] for i in ids])
         return l2_nearest(ids, matrix, vector, k)
 
+    def nearest_tagged(
+        self, channel: ChannelName, vector: Vector, k: int, tags: frozenset[str]
+    ) -> list[tuple[str, float]]:
+        """Like :meth:`nearest`, restricted to memories having *all* ``tags`` (exact).
+
+        An extension of the :class:`~madeleine.core.types.MemoryStore` protocol used by the
+        engine so that tagged recall cannot be starved by closer untagged memories.
+        """
+        if not tags:
+            return self.nearest(channel, vector, k)
+        with self._lock:
+            self._check_open()
+            vecs = self._vectors.get(channel)
+            if not vecs or k <= 0:
+                return []
+            ids = [i for i in vecs if tags <= self._memories[i].context.tags]
+            if not ids:
+                return []
+            matrix = np.stack([vecs[i] for i in ids])
+        return l2_nearest(ids, matrix, vector, k)
+
     def record_trigger(self, memory_id: str, at: datetime) -> None:
         with self._lock:
             self._check_open()
@@ -149,9 +193,15 @@ class InMemoryStore:
             return max(times) if times else None
 
     def claim_trigger(self, memory_id: str, at: datetime, refractory_period: timedelta) -> bool:
-        """Atomically record a trigger unless the memory is refractory (engine fast path)."""
+        """Atomically record a trigger unless the memory is refractory: any recorded trigger
+        within ``refractory_period`` of ``at`` (not only the latest) blocks it, and so does a
+        memory that does not exist (any more)."""
         with self._lock:
-            if is_refractory(self.last_triggered(memory_id), at, refractory_period):
+            self._check_open()
+            if memory_id not in self._memories:
+                return False
+            times = self._triggers.get(memory_id, ())
+            if any(is_refractory(t, at, refractory_period) for t in times):
                 return False
             self.record_trigger(memory_id, at)
             return True

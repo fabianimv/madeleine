@@ -28,7 +28,7 @@ DEFAULT_GEOHASH_PRECISION = 9
 """Precision used when converting lat/lon to a geohash (~5 m cells)."""
 
 
-def parse_timestamp(value: str | datetime | None, *, default: datetime) -> datetime:
+def parse_timestamp(value: object, *, default: datetime) -> datetime:
     """Parse an ISO-8601 timestamp.
 
     * ``None``/``""`` -> ``default``.
@@ -40,6 +40,8 @@ def parse_timestamp(value: str | datetime | None, *, default: datetime) -> datet
         return default
     if isinstance(value, datetime):
         dt = value
+    elif not isinstance(value, str):
+        raise ObservationError(f"timestamp must be an ISO-8601 string, got {type(value).__name__}")
     else:
         text = value.strip()
         if text.endswith(("Z", "z")):
@@ -100,7 +102,7 @@ def signal_from_json(obj: Mapping[str, Any], *, now: datetime | None = None) -> 
         {"channel": "geo", "value": [48.8584, 2.2945]}        # or "u09tunq"
         {"channel": "biometric", "value": {"heart_rate": 92}}
         {"channel": "image", "data_b64": "...", "mime_type": "image/png"}
-        {"channel": "audio", "uri": "https://...", "mime_type": "audio/wav"}
+        {"channel": "audio", "data_b64": "...", "mime_type": "audio/wav"}
         {"channel": "time", "value": "2026-06-01T21:30:00+02:00"}
 
     ``data_b64`` is decoded to ``bytes`` and becomes the value. JSON lists become tuples.

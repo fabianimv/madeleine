@@ -840,14 +840,17 @@ wheels = [
 
 [[package]]
 name = "madeleine-mcp"
-version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "mcp" },
+    { name = "mcp-types" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pydantic" },
     { name = "sqlite-vec" },
+    { name = "starlette" },
     { name = "typer" },
     { name = "uvicorn" },
 ]
@@ -892,23 +895,33 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.0" },
     { name = "fastapi", specifier = ">=0.110" },
-    { name = "madeleine-mcp", extras = ["text", "image", "audio"], marker = "extra == 'all'" },
-    { name = "mcp", specifier = ">=2.0,<3" },
+    { name = "mcp", specifier = ">=2.3,<2.4" },
+    { name = "mcp-types", specifier = ">=2.3,<2.4" },
     { name = "numpy", specifier = ">=1.26" },
+    { name = "numpy", marker = "extra == 'all'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'audio'", specifier = ">=1.26" },
+    { name = "open-clip-torch", marker = "extra == 'all'", specifier = ">=2.24" },
     { name = "open-clip-torch", marker = "extra == 'image'", specifier = ">=2.24" },
+    { name = "pillow", marker = "extra == 'all'", specifier = ">=10.0" },
     { name = "pillow", marker = "extra == 'image'", specifier = ">=10.0" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "sentence-transformers", marker = "extra == 'all'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'text'", specifier = ">=3.0" },
+    { name = "soundfile", marker = "extra == 'all'", specifier = ">=0.12" },
     { name = "soundfile", marker = "extra == 'audio'", specifier = ">=0.12" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
+    { name = "starlette", specifier = ">=0.37" },
+    { name = "torch", marker = "extra == 'all'", specifier = ">=2.2" },
     { name = "torch", marker = "extra == 'audio'", specifier = ">=2.2" },
     { name = "torch", marker = "extra == 'image'", specifier = ">=2.2" },
+    { name = "transformers", marker = "extra == 'all'", specifier = ">=4.40" },
     { name = "transformers", marker = "extra == 'audio'", specifier = ">=4.40" },
     { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", specifier = ">=0.29" },
 ]
-provides-extras = ["text", "image", "audio", "all"]
+provides-extras = ["all", "audio", "image", "text"]
 
 [package.metadata.requires-dev]
 dev = [

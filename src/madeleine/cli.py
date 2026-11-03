@@ -43,9 +43,13 @@ JsonOpt = Annotated[bool, typer.Option("--json", help="Print JSON.")]
 
 def _engine(db: str | None, text_backend: str | None = None) -> Any:
     from madeleine.config import load_config
+    from madeleine.core.types import MadeleineError
     from madeleine.engine import create_engine
 
-    return create_engine(load_config(db_path=db, text_backend=text_backend))
+    try:
+        return create_engine(load_config(db_path=db, text_backend=text_backend))
+    except (MadeleineError, ValueError) as exc:  # bad env/flags, incompatible database...
+        raise _fail(str(exc)) from exc
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -86,22 +90,36 @@ def serve(
     db: DbOpt = None,
     text_backend: TextBackendOpt = None,
     allow_file_uris: Annotated[
-        bool, typer.Option(help="Let MCP clients reference local files by URI.")
+        bool,
+        typer.Option(
+            help="Let clients (MCP and HTTP) reference media files on this machine. Off by default."
+        ),
+    ] = False,
+    insecure_no_auth: Annotated[
+        bool,
+        typer.Option(
+            help="Allow a non-loopback --host without MADELEINE_API_TOKEN (exposes your memories)."
+        ),
     ] = False,
 ) -> None:
     """Run the MCP server (stdio), or MCP + HTTP ingestion on one port (http)."""
+    from madeleine.serve import InsecureBindError
     from madeleine.serve import serve as _serve
 
     if transport not in {"stdio", "http"}:
         raise _fail("--transport must be 'stdio' or 'http'")
-    _serve(
-        transport=transport,
-        host=host,
-        port=port,
-        db=db,
-        text_backend=text_backend,
-        allow_file_uris=allow_file_uris,
-    )
+    try:
+        _serve(
+            transport=transport,
+            host=host,
+            port=port,
+            db=db,
+            text_backend=text_backend,
+            allow_file_uris=allow_file_uris,
+            insecure_no_auth=insecure_no_auth,
+        )
+    except InsecureBindError as exc:
+        raise _fail(str(exc)) from exc
 
 
 @app.command()
@@ -132,7 +150,7 @@ def remember(
             salience=salience,
         )
         memory = engine.remember(content, context=ctx)
-    except MadeleineError as exc:
+    except (MadeleineError, ValueError) as exc:
         raise _fail(str(exc)) from exc
     finally:
         engine.close()
@@ -166,7 +184,7 @@ def sense(
         if heart_rate is not None:
             signals.append(RawSignal("biometric", {"heart_rate": heart_rate}))
         fired = engine.sense(engine.build_cue(signals, context=ctx, source="cli"))
-    except MadeleineError as exc:
+    except (MadeleineError, ValueError) as exc:
         raise _fail(str(exc)) from exc
     finally:
         engine.close()
@@ -195,6 +213,8 @@ def recall(
     from madeleine.core.serde import context_from_fields
     from madeleine.core.types import MadeleineError, RawSignal, RecallQuery
 
+    if (lat is None) != (lon is None):
+        raise _fail("--lat and --lon must be given together")
     if query is None and at is None and geohash is None and lat is None:
         raise _fail("give a query, --at, --geohash or --lat/--lon")
     engine = _engine(db, text_backend)
@@ -203,7 +223,7 @@ def recall(
         signals = [RawSignal("text", query)] if query else []
         cue = engine.build_cue(signals, context=ctx, include_time=at is not None, source="cli")
         hits = engine.recall(RecallQuery(cue=cue, k=k))
-    except MadeleineError as exc:
+    except (MadeleineError, ValueError) as exc:
         raise _fail(str(exc)) from exc
     finally:
         engine.close()

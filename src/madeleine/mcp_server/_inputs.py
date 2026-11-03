@@ -2,7 +2,11 @@
 
 All real parsing (timestamps, geohash / lat-lon, base64, signal shapes) lives in ``serde``;
 this module only adds what is specific to the MCP surface: the JSON schema the model sees,
-the local-file URI policy and the "one signal per channel" rule of a cue.
+an early local-file check and the "one signal per channel" rule of a cue.
+
+The local-file policy itself is enforced by the image/audio adapters
+(``MadeleineConfig.allow_local_files``); :func:`parse_signals` repeats it as defence in
+depth so a refused request never reaches the engine.
 """
 
 from __future__ import annotations
@@ -15,14 +19,27 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field
 
 from madeleine.core import serde
-from madeleine.core.types import ObservationError, RawSignal
+from madeleine.core.types import AUDIO, IMAGE, ObservationError, RawSignal
 
 __all__ = [
+    "LOCAL_FILES_DISABLED",
+    "MEDIA_CHANNELS",
     "SignalInput",
     "check_unique_channels",
     "is_local_uri",
     "parse_signals",
 ]
+
+
+MEDIA_CHANNELS: frozenset[str] = frozenset({IMAGE, AUDIO})
+"""Channels whose string ``value`` is read as a file path by their adapters."""
+
+LOCAL_FILES_DISABLED = (
+    "local file paths / file:// URIs are disabled on this server; send the media bytes "
+    "base64-encoded in data_b64 (madeleine never downloads remote URLs). The server operator "
+    "can enable local files with 'serve --allow-file-uris'"
+)
+"""Refusal for a local file reference; constant, so it reveals nothing about the file."""
 
 
 class SignalInput(BaseModel):
@@ -42,7 +59,7 @@ class SignalInput(BaseModel):
             "The reading. text: a string. geo: a geohash string or [lat, lon]. "
             "time: an ISO-8601 timestamp. biometric: an object of numbers, e.g. "
             '{"heart_rate": 92} (bpm), hrv (ms), skin_temp (deg C), eda (microsiemens), '
-            "steps_per_min, respiration_rate. Omit for image/audio sent as data_b64 or uri."
+            "steps_per_min, respiration_rate. image/audio: omit it and send data_b64."
         ),
     )
     data_b64: str | None = Field(
@@ -55,8 +72,9 @@ class SignalInput(BaseModel):
     uri: str | None = Field(
         default=None,
         description=(
-            "Where the media lives (https://...). Local file paths / file:// URIs are "
-            "rejected unless the server was started with --allow-file-uris."
+            "image/audio only: local file path or file:// URI of the media, only if the "
+            "server was started with --allow-file-uris; otherwise send the bytes in "
+            "data_b64. Remote URLs (https://...) are never fetched."
         ),
     )
     at: str | None = Field(
@@ -82,16 +100,20 @@ def parse_signals(
     now: datetime,
     allow_file_uris: bool,
 ) -> list[RawSignal]:
-    """Apply the URI policy, then parse with :func:`serde.signals_from_json`."""
+    """Apply the local-file policy, then parse with :func:`serde.signals_from_json`.
+
+    When ``allow_file_uris`` is False, a local ``uri`` and a string ``value`` on a media
+    channel (which the adapters read as a path) are refused with
+    :data:`LOCAL_FILES_DISABLED`, without touching the filesystem.
+    """
     dicts = [_as_dict(item) for item in items or ()]
     if not allow_file_uris:
         for d in dicts:
             uri = d.get("uri")
             if isinstance(uri, str) and is_local_uri(uri):
-                raise ObservationError(
-                    f"local file URIs are disabled on this server ({uri!r}); send the bytes "
-                    "as data_b64, use an http(s) URI, or start the server with --allow-file-uris"
-                )
+                raise ObservationError(LOCAL_FILES_DISABLED)
+            if d.get("channel") in MEDIA_CHANNELS and isinstance(d.get("value"), str):
+                raise ObservationError(LOCAL_FILES_DISABLED)
     return serde.signals_from_json(dicts, now=now)
 
 

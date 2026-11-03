@@ -95,7 +95,7 @@ def create_app(engine: MemoryEngine, *, mounts: Mapping[str, ASGIApp] | None = N
 # integrations/claude_code.py (ingestion)
 def main(argv: Sequence[str] | None = None, *, stdin=None, stdout=None,
          engine_factory: Callable[[MadeleineConfig], MemoryEngine] | None = None) -> int
-#  flags: --url --token --db --sense-prompt --limit --timeout; always exits 0
+#  flags: --url --token-file --token (deprecated) --db --sense-prompt --limit --timeout; always exits 0
 
 # evals (evals)
 def run_bench(*, memories: int = 500, cues: int = 300, seed: int = 0,
@@ -110,7 +110,7 @@ def run_bench(*, memories: int = 500, cues: int = 300, seed: int = 0,
 
 | Channel | Embedder | dim | Similarity → [0,1] | default weight | solo_trigger | Extra |
 |---|---|---|---|---|---|---|
-| `text` | sentence-transformers MiniLM-L6-v2 (or HashEmbedder) | 384 (hash: 256) | `max(0, cos)` | 1.0 | yes | `[text]` |
+| `text` | sentence-transformers MiniLM-L6-v2 (or HashEmbedder) | 384 (hash: 256) | `max(0, cos)`; hash backend: cosine rescaled [0.10, 0.45] → [0, 1] | 1.0 | yes | `[text]` |
 | `image` | open_clip ViT-B-32 | 512 | rescaled cosine (CLIP cosines cluster high) | 1.0 | yes | `[image]` |
 | `audio` | LAION CLAP (htsat-unfused) | 512 | rescaled cosine | 1.0 | yes | `[audio]` |
 | `time` | cyclical: hour-of-day, weekday, day-of-year as (sin, cos) | 6 | mean of per-cycle `(1+cos Δ)/2`, hour-weighted | 0.5 | **no** | – |
@@ -126,13 +126,18 @@ ImageBind is **not** a dependency (CC-BY-NC); users may plug it in themselves as
 One file (default `~/.madeleine/madeleine.db`, WAL mode). Tables (core-engine may refine):
 
 * `memories(id PK, content, media_ref, created_at, ts, geohash, salience, tags_json, metadata_json, observations_json)`
-* `raw_blobs(memory_id, channel, mime_type, data)` — only when `store_raw`
+* `raw_blobs(memory_id, channel, data)` — only when `store_raw`
 * `channels(name PK, dim, model_id)`
-* `vec_<channel>` — `vec0(embedding float[dim])`, rowid ↔ `memory_rowid` map
+* `vectors(memory, channel, embedding)` — source of truth; `vec_ch<channel id>` — `vec0` KNN index rebuilt from it (named by integer id, never by channel name)
 * `triggers(memory_id, at)`
-* `queue(seq INTEGER PK AUTOINCREMENT, rec_id, memory_id, payload_json, enqueued_at)`
+* `queue(seq INTEGER PK AUTOINCREMENT, rec_id, memory_id, payload_json, enqueued_at)` —
+  `payload_json` (schema 2) holds only the memory id + score explanation; the memory is
+  rehydrated from `memories` on peek/drain, and rows of forgotten memories are dropped
 
-`drain` deletes in a single transaction (`BEGIN IMMEDIATE`). If `sqlite_vec` cannot be
+`drain` deletes in a single transaction (`BEGIN IMMEDIATE`). Every connection sets
+`PRAGMA secure_delete = ON`; files are created owner-only (`0600`, directory `0700`).
+`meta.vec_dirty` (vectors written by a process without sqlite-vec) makes `nearest` use exact
+brute force until the index is rebuilt. If `sqlite_vec` cannot be
 loaded (some system Pythons disable extension loading) the store falls back to numpy
 brute-force over vectors kept in a plain table, logging a warning once.
 
@@ -154,13 +159,23 @@ only if the server was started with `--allow-file-uris`; off by default).
 
 ## HTTP surface (ingestion)
 
-* `POST /cues` — body: `{signals: [{channel, value, mime_type?, uri?}], at?, geohash?, lat?, lon?, tags?, source?}` → `{cue_id, recollections: [...]}`
+* `POST /cues` — body: `{signals: [{channel, value?, data_b64?, mime_type?, uri?}], text?, at?, geohash?, lat?, lon?, biometric?, tags?, salience?, source?}` → `{cue_id, recollections: [...]}`; an empty cue is a 422
 * `POST /cues/{adapter}` — adapter-specific payload (`generic`, `home_assistant`, `ios_shortcuts`)
-* `POST /memories` — same fields as the `remember` tool
-* `GET /recollections/pending?drain=true&limit=` — used by remote hooks
+* `POST /memories` — the `remember` tool's fields (+ `metadata`, `embed_content`, `store_raw`) → 201
+* `POST /recall` — the `recall` tool's fields (time only when `at` is given; unknown channels → 422)
+* `DELETE /memories/{id}`
+* `GET /recollections/pending?limit=` — peek (never drains); `POST /recollections/drain?limit=` — take
 * `GET /healthz`
-* Optional bearer token: `MADELEINE_API_TOKEN`; when set, all routes but `/healthz` require it.
-  Binds to `127.0.0.1` by default.
+* Guard on every route including mounted `/mcp`: Host/Origin allow-list (loopback +
+  `MADELEINE_ALLOWED_HOSTS`; 421/403), optional bearer token `MADELEINE_API_TOKEN` (all routes
+  but `/healthz`), body limit (`MADELEINE_MAX_BODY_BYTES`, default 10 MiB → 413).
+  Binds to `127.0.0.1` by default; `serve` refuses a non-loopback bind without a token unless
+  `--insecure-no-auth`.
+* Errors: `ObservationError`/`ValueError` → 422, `ChannelNotAvailableError` → 400,
+  `MemoryNotFoundError` → 404, `StoreError` → 409, other `MadeleineError` → 500 (with message).
+* Local files: media signals may reference files on disk only when
+  `MadeleineConfig.allow_local_files` (`serve --allow-file-uris`); enforced by the media
+  adapters, so it applies to MCP, HTTP and webhooks alike.
 
 ## CLI (lead, integration)
 

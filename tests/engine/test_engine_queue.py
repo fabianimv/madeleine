@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from madeleine.core.types import (
+    ChannelSpec,
     Memory,
     Observation,
     RecallMode,
@@ -20,7 +21,12 @@ from madeleine.core.types import (
     SensoryContext,
     SensoryFingerprint,
 )
-from madeleine.store import InMemoryRecollectionQueue, SQLiteRecollectionQueue, open_sqlite
+from madeleine.store import (
+    InMemoryRecollectionQueue,
+    SQLiteMemoryStore,
+    SQLiteRecollectionQueue,
+    open_sqlite,
+)
 from madeleine.store.codec import recollection_from_dict, recollection_to_dict
 
 T0 = datetime(2026, 6, 1, 21, 30, tzinfo=UTC)
@@ -63,6 +69,38 @@ def make_rec(i: int, memory_id: str | None = None, *, raw: bytes | None = None) 
     )
 
 
+def seed(queue: RecollectionQueue, *recs: Recollection) -> None:
+    """The SQLite queue rehydrates memories from its own file: store them there first."""
+    if not isinstance(queue, SQLiteRecollectionQueue):
+        return
+    store = SQLiteMemoryStore(queue.database)
+    for spec in (ChannelSpec("text", dim=2), ChannelSpec("geo", dim=3), ChannelSpec("image", 1)):
+        store.register_channel(spec)
+    for r in recs:
+        if not store.get_many([r.memory.id]):
+            fp = r.memory.fingerprint
+            store.add(
+                Memory(
+                    id=r.memory.id,
+                    content=r.memory.content,
+                    fingerprint=SensoryFingerprint(
+                        embeddings=fp.embeddings,
+                        context=fp.context,
+                        observations={c: o.without_raw() for c, o in fp.observations.items()},
+                    ),
+                    created_at=r.memory.created_at,
+                    media_ref=r.memory.media_ref,
+                    metadata=r.memory.metadata,
+                )
+            )
+    store.close()
+
+
+def put(queue: RecollectionQueue, rec: Recollection) -> None:
+    seed(queue, rec)
+    queue.put(rec)
+
+
 @pytest.fixture(params=["memory", "sqlite"])
 def queue(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[RecollectionQueue]:
     if request.param == "memory":
@@ -81,7 +119,7 @@ def test_codec_round_trip_exact() -> None:
 def test_fifo_peek_drain_limit(queue: RecollectionQueue) -> None:
     recs = [make_rec(i) for i in range(5)]
     for r in recs:
-        queue.put(r)
+        put(queue, r)
     assert queue.pending_count() == 5
     assert queue.peek(2) == recs[:2]
     assert queue.peek() == recs
@@ -102,17 +140,17 @@ def test_listeners_and_unsubscribe(queue: RecollectionQueue) -> None:
 
     unsub = queue.subscribe(seen.append)
     queue.subscribe(boom)
-    queue.put(make_rec(1))
+    put(queue, make_rec(1))
     unsub()
-    queue.put(make_rec(2))
+    put(queue, make_rec(2))
     assert [r.id for r in seen] == ["rec_00001"]
     assert queue.pending_count() == 2
 
 
 def test_discard_memory(queue: RecollectionQueue) -> None:
-    queue.put(make_rec(1, "mem_x"))
-    queue.put(make_rec(2, "mem_y"))
-    queue.put(make_rec(3, "mem_x"))
+    put(queue, make_rec(1, "mem_x"))
+    put(queue, make_rec(2, "mem_y"))
+    put(queue, make_rec(3, "mem_x"))
     assert queue.discard_memory("mem_x") == 2
     assert queue.discard_memory("mem_x") == 0
     assert [r.id for r in queue.peek()] == ["rec_00002"]
@@ -121,7 +159,7 @@ def test_discard_memory(queue: RecollectionQueue) -> None:
 def test_queue_never_persists_raw_bytes(tmp_path: Path) -> None:
     secret = b"RAW-AUDIO-BYTES-DO-NOT-PERSIST"
     q = SQLiteRecollectionQueue(tmp_path / "q.db")
-    q.put(make_rec(1, raw=secret))
+    put(q, make_rec(1, raw=secret))
     got = q.peek()[0]
     assert got.memory.fingerprint.observations["image"].data is None
     q.close()
@@ -130,10 +168,10 @@ def test_queue_never_persists_raw_bytes(tmp_path: Path) -> None:
 
 def test_shared_memory_connection() -> None:
     store, q = open_sqlite(":memory:")
-    q.put(make_rec(1))
+    put(q, make_rec(1))
     assert q.pending_count() == 1
     q.close()
-    assert store.count() == 0  # connection kept alive while the store still uses it
+    assert store.count() == 1  # connection kept alive while the store still uses it
     store.close()
 
 
@@ -142,7 +180,7 @@ def test_drain_atomic_across_two_connections(tmp_path: Path) -> None:
     queues = [SQLiteRecollectionQueue(path), SQLiteRecollectionQueue(path)]
     n = 300
     for i in range(n):
-        queues[i % 2].put(make_rec(i))
+        put(queues[i % 2], make_rec(i))
     got: list[str] = []
     lock = threading.Lock()
 
@@ -184,7 +222,7 @@ def test_drain_atomic_across_processes(tmp_path: Path) -> None:
     q = SQLiteRecollectionQueue(path)
     n = 200
     for i in range(n):
-        q.put(make_rec(i))
+        put(q, make_rec(i))
     ctx = mp.get_context("spawn")
     out = ctx.Queue()
     procs = [ctx.Process(target=_drain_in_child, args=(path, out)) for _ in range(3)]
@@ -206,14 +244,14 @@ def test_drain_atomic_across_processes(tmp_path: Path) -> None:
 def test_undecodable_entry_is_dropped(tmp_path: Path) -> None:
     path = tmp_path / "bad.db"
     q = SQLiteRecollectionQueue(path)
-    q.put(make_rec(1))
+    put(q, make_rec(1))
     conn = sqlite3.connect(path)
     conn.execute(
         "INSERT INTO queue(rec_id, memory_id, payload_json, enqueued_at) VALUES ('x','y','{}','z')"
     )
     conn.commit()
     conn.close()
-    q.put(make_rec(2))
+    put(q, make_rec(2))
     assert [r.id for r in q.drain()] == ["rec_00001", "rec_00002"]
     assert q.pending_count() == 0
     q.close()

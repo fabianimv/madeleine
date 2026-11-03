@@ -25,18 +25,22 @@ Workstreams 3–5 build against the protocols; until 1–2 merge they use local 
 own test directories. The lead merges each branch after its tests pass and wires real
 implementations.
 
-## Integration (lead)
+## Integration (lead) — done
 
-- `cli.py`, `serve.py`, `demo.py`; swap fakes for real engine in integration tests
-- `tests/test_end_to_end.py`: the definition-of-done demo scenario
+- [x] All five workstreams merged; `cli.py`, `serve.py`, `demo.py`
+- [x] `tests/test_demo.py`: the definition-of-done scenario; hash-text calibration (see
+      docs/benchmarks.md)
 
 ## Phase 2 — sequential
 
-6. **reviewer** (fresh subagent): REVIEW.md against ARCHITECTURE.md, security/privacy
+6. [x] **reviewer** (fresh subagent): REVIEW.md against ARCHITECTURE.md, security/privacy
    checklist, API consistency. Every item fixed or explicitly deferred with reason.
-7. **docs-release**: README, docs/concepts.md, CONTRIBUTING, SECURITY, CHANGELOG, CI
+7. [x] **docs-release**: README, docs/concepts.md, CONTRIBUTING, SECURITY, CHANGELOG, CI
    (lint, typecheck, tests on 3.11–3.13), PyPI trusted publishing workflow, `server.json`.
    Nothing is published.
+
+Status: REVIEW.md lists 32 findings, all resolved (see its "Resolution" table); 635 tests
+pass on Python 3.11, 3.12 and 3.13.
 
 ## Definition of done (v0.1.0)
 
