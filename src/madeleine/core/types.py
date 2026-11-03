@@ -591,6 +591,11 @@ class MadeleineConfig:
       lazily on first use (never at import).
     * ``store_raw`` - default for persisting raw media bytes. **False**: only embeddings
       and metadata are stored.
+    * ``allow_local_files`` - whether media signals may reference files on the server's
+      disk (``file://`` URIs or bare paths, in ``uri`` *or* ``value``). **False** by
+      default: every surface (MCP, HTTP, webhooks) must send bytes (``data_b64``). Enforced
+      by the media channels' adapters themselves, so no input path can bypass it. Env:
+      ``MADELEINE_ALLOW_LOCAL_FILES``; CLI: ``serve --allow-file-uris``.
     * ``recall`` - fusion parameters.
     """
 
@@ -601,6 +606,7 @@ class MadeleineConfig:
     image_model: str = "ViT-B-32/laion2b_s34b_b79k"
     audio_model: str = "laion/clap-htsat-unfused"
     store_raw: bool = False
+    allow_local_files: bool = False
     recall: RecallConfig = field(default_factory=RecallConfig)
 
 
