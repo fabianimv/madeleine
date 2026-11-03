@@ -18,8 +18,10 @@ Layout (``PRAGMA user_version`` = :data:`SCHEMA_VERSION`)::
 
 The ``vectors`` table is the source of truth; ``vec0`` tables are a KNN index over it. When
 the sqlite-vec extension cannot be loaded, ``nearest`` falls back to numpy brute force over
-``vectors`` (a warning is logged once) and writes set ``meta.vec_dirty`` so that the next
-connection that *can* load the extension rebuilds the index.
+``vectors`` (a warning is logged once) and writes set ``meta.vec_dirty``. A connection that
+*can* load the extension checks the flag before each KNN query and uses brute force while it
+is set (so mixed processes never miss memories); it rebuilds the index when it opens and on
+its next write.
 
 Concurrency: one connection per :class:`SQLiteDatabase` (``check_same_thread=False``)
 guarded by a lock; WAL mode and ``busy_timeout`` across connections/processes; every write
@@ -327,8 +329,7 @@ class SQLiteDatabase:
                 self._sync_vec_tables(conn)
 
     def _sync_vec_tables(self, conn: sqlite3.Connection) -> None:
-        dirty = conn.execute("SELECT value FROM meta WHERE key = 'vec_dirty'").fetchone()
-        rebuild = dirty is not None and dirty[0] == "1"
+        rebuild = _vec_dirty(conn)
         for ch_id, name, dim in conn.execute("SELECT id, name, dim FROM channels").fetchall():
             table = _vec_table(ch_id)
             if rebuild and _table_exists(conn, table):
@@ -337,6 +338,25 @@ class SQLiteDatabase:
         if rebuild:
             _log.info("rebuilt sqlite-vec index after fallback-mode writes")
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('vec_dirty', '0')")
+
+    def vec_index_current(self) -> bool:
+        """Whether KNN may use the sqlite-vec index (R14).
+
+        ``False`` when the extension is not loaded or another connection wrote without it
+        (``meta.vec_dirty``): ``nearest`` then uses exact brute force, so a long-running
+        process with the extension never misses vectors written by a fallback-mode process.
+        Checked before every KNN query (one primary-key lookup); reads never rebuild.
+        """
+        if not self.vec_enabled:
+            return False
+        with self.read() as conn:
+            return not _vec_dirty(conn)
+
+    def repair_vec_index(self, conn: sqlite3.Connection) -> None:
+        """Inside a write transaction: rebuild the index if fallback-mode writes made it
+        stale (so the next write of a sqlite-vec connection restores fast KNN)."""
+        if self.vec_enabled and _vec_dirty(conn):
+            self._sync_vec_tables(conn)
 
     def mark_vec_dirty(self, conn: sqlite3.Connection) -> None:
         """Called inside write transactions made without the extension."""
@@ -353,6 +373,11 @@ def _warn_fallback(reason: str) -> None:
     _log.warning(
         "sqlite-vec could not be loaded (%s); using numpy brute-force nearest neighbours", reason
     )
+
+
+def _vec_dirty(conn: sqlite3.Connection) -> bool:
+    row = conn.execute("SELECT value FROM meta WHERE key = 'vec_dirty'").fetchone()
+    return row is not None and row[0] == "1"
 
 
 def _vec_table(channel_id: int) -> str:
@@ -427,6 +452,7 @@ class SQLiteMemoryStore:
     # -- channels ------------------------------------------------------------------------
     def register_channel(self, spec: ChannelSpec) -> None:
         with self._db.write() as conn:
+            self._db.repair_vec_index(conn)
             row = conn.execute(
                 "SELECT id, dim, model_id FROM channels WHERE name = ?", (spec.name,)
             ).fetchone()
@@ -476,6 +502,7 @@ class SQLiteMemoryStore:
         fp = memory.fingerprint
         ctx = fp.context
         with self._db.write() as conn:
+            self._db.repair_vec_index(conn)
             channels = self._channels(conn)
             for name, vec in fp.embeddings.items():
                 if name not in channels:
@@ -611,6 +638,7 @@ class SQLiteMemoryStore:
         """Delete the memory, its vectors, raw data, triggers and pending queue entries in one
         transaction, then checkpoint the WAL (freed pages are zeroed: ``secure_delete``)."""
         with self._db.write() as conn:
+            self._db.repair_vec_index(conn)
             row = conn.execute("SELECT rowid FROM memories WHERE id = ?", (memory_id,)).fetchone()
             if row is None:
                 conn.execute("DELETE FROM triggers WHERE memory_id = ?", (memory_id,))
@@ -661,6 +689,7 @@ class SQLiteMemoryStore:
     def nearest(self, channel: ChannelName, vector: Vector, k: int) -> list[tuple[str, float]]:
         if k <= 0:
             return []
+        use_index = k <= VEC_MAX_K and self._db.vec_index_current()
         with self._db.read() as conn:
             info = self._channels(conn).get(channel)
             if info is None:
@@ -671,7 +700,7 @@ class SQLiteMemoryStore:
                     f"query vector for {channel!r} has length {len(vector)}, not {dim}"
                 )
             table = _vec_table(ch_id)
-            if self._db.vec_enabled and k <= VEC_MAX_K and _table_exists(conn, table):
+            if use_index and _table_exists(conn, table):
                 hits = conn.execute(
                     f"SELECT rowid, distance FROM {table} WHERE embedding MATCH ? AND k = ? "
                     "ORDER BY distance",

@@ -209,3 +209,45 @@ def test_r15_listener_may_forget_during_sense(make_engine: EngineFactory) -> Non
     assert eng.store.count() == 0
     assert eng.queue.pending_count() == 0
     assert eng.store.last_triggered(m.id) is None
+
+
+# -- R14: a live sqlite-vec connection sees fallback-mode writes -------------------------
+def test_r14_vec_connection_sees_fallback_writes_without_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.db"
+    a = SQLiteMemoryStore(path, use_sqlite_vec=True)
+    b = SQLiteMemoryStore(path, use_sqlite_vec=False)
+    spec = ChannelSpec("geo", dim=3)
+    a.register_channel(spec)
+    b.register_channel(spec)
+    q = (1.0, 0.0, 0.0)
+
+    def mem(mid: str, vec: tuple[float, ...]) -> Memory:
+        fp = SensoryFingerprint(embeddings={"geo": vec}, context=SensoryContext(T))
+        return Memory(id=mid, content=mid, fingerprint=fp, created_at=T)
+
+    a.add(mem("mem_by_a", (1.0, 0.0, 0.0)))
+    assert [i for i, _ in a.nearest("geo", q, 5)] == ["mem_by_a"]
+    b.add(mem("mem_by_b", (0.0, 1.0, 0.0)))
+    assert [i for i, _ in a.nearest("geo", q, 5)] == ["mem_by_a", "mem_by_b"]
+    assert [i for i, _ in b.nearest("geo", q, 5)] == ["mem_by_a", "mem_by_b"]
+    b.register_channel(ChannelSpec("text", dim=2))  # channel created without a vec0 table
+    b.add(
+        Memory(
+            id="mem_text",
+            content="t",
+            fingerprint=SensoryFingerprint(
+                embeddings={"text": (1.0, 0.0)}, context=SensoryContext(T)
+            ),
+            created_at=T,
+        )
+    )
+    assert [i for i, _ in a.nearest("text", (1.0, 0.0), 5)] == ["mem_text"]
+    assert b.delete("mem_by_a")
+    assert [i for i, _ in a.nearest("geo", q, 5)] == ["mem_by_b"]
+    assert not a.database.vec_index_current()  # reads never rebuild ...
+    a.add(mem("mem_by_a2", (0.9, 0.1, 0.0)))  # ... the next sqlite-vec write does
+    assert a.database.vec_index_current()
+    assert [i for i, _ in a.nearest("geo", q, 5)] == ["mem_by_a2", "mem_by_b"]
+    assert [i for i, _ in a.nearest("text", (1.0, 0.0), 5)] == ["mem_text"]
+    a.close()
+    b.close()
