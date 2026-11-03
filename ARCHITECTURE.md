@@ -32,6 +32,9 @@ flowchart LR
 |---|---|---|
 | `core/types.py` | lead | Contract. Changes need an ADR. |
 | `config.py` | lead | `load_config(env, **overrides)`, `resolve_db_path()` |
+| `core/geohash.py` | lead | Pure geohash `encode/decode/bounds/is_valid`, `haversine_km` (use it; don't re-implement) |
+| `core/serde.py` | lead | `parse_timestamp`, `context_from_fields`, `signal_from_json(s)`: the ONE way MCP/HTTP/CLI/webhooks parse inputs |
+| `testing.py` | lead | `FakeClock`, `FakeEngine` (crude in-memory `MemoryEngine` for testing consumers), `FakeQueue` |
 | `cli.py`, `demo.py`, `serve.py` | lead (integration) | Typer CLI and composition |
 | `core/fusion.py` | core-engine | Pure functions: `fuse()`, `decay_factor()`, `salience_factor()`, `coverage()` |
 | `engine.py` | core-engine | `Madeleine` (implements `MemoryEngine`), `create_engine()` |
@@ -40,7 +43,6 @@ flowchart LR
 | `channels/registry.py` | channels | `DefaultChannelRegistry`, `default_registry(config)` |
 | `channels/{text,image,audio,time,geo,biometric,smell}.py` | channels | One module per sense |
 | `channels/hashing.py` | channels | `HashEmbedder` (offline fake) |
-| `channels/geohash.py` | channels | Pure-python geohash encode/decode/neighbours |
 | `channels/similarity.py` | channels | `cosine01`, helpers |
 | `mcp_server/server.py` | mcp-server | `create_server(engine) -> MCPServer`, `run_stdio(engine)` |
 | `mcp_server/http.py` | mcp-server | `mcp_asgi_app(engine)` + lifespan for streamable HTTP |

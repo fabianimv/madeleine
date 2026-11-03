@@ -922,8 +922,11 @@ class MemoryEngine(Protocol):
         ``context`` defaults to ``SensoryContext(timestamp=clock.now())``. When
         ``include_time`` the ``time`` observation is derived from ``context.timestamp``;
         when ``include_geo`` and ``context.geohash`` is set, the ``geo`` observation is
-        derived from it. Explicit ``time``/``geo`` signals win over derived ones. Signals
-        on unknown/disabled channels raise :class:`ChannelNotAvailableError`.
+        derived from it. Explicit ``time``/``geo`` signals win over derived ones; if an
+        explicit ``geo`` signal is given and ``context.geohash`` is ``None``, the returned
+        cue's context takes the observation's geohash. Signals on unknown/disabled
+        channels raise :class:`ChannelNotAvailableError`. Derived ``time``/``geo``
+        observations are silently skipped when those channels are not registered.
         """
         ...
 
@@ -943,7 +946,9 @@ class MemoryEngine(Protocol):
         The fingerprint gets: every signal's embedding; ``time`` from
         ``context.timestamp`` (default now); ``geo`` from ``context.geohash`` if set; and,
         if ``embed_content`` and no explicit ``text`` signal was given, ``text`` from
-        ``content``. ``store_raw`` (default ``config.store_raw``) controls whether raw
+        ``content``. As in :meth:`build_cue`, an explicit ``geo`` signal fills
+        ``context.geohash`` when it is ``None``. Empty ``content`` raises
+        :class:`ObservationError`. ``store_raw`` (default ``config.store_raw``) controls whether raw
         media bytes are persisted.
         """
         ...
