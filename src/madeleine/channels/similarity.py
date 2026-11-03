@@ -16,6 +16,7 @@ from madeleine.core.types import SimilarityFn, Vector
 __all__ = [
     "cosine",
     "cosine01",
+    "describe_similarity",
     "dot",
     "l2_norm",
     "l2_normalize",
@@ -86,5 +87,13 @@ def rescaled_cosine(lo: float, hi: float) -> SimilarityFn:
         return max(0.0, min(1.0, (cosine(a, b) - lo) / span))
 
     similarity.__name__ = f"rescaled_cosine_{lo:g}_{hi:g}"
-    similarity.__doc__ = f"Cosine mapped linearly from [{lo:g}, {hi:g}] to [0, 1] (clamped)."
+    similarity.__doc__ = f"cosine rescaled from [{lo:g}, {hi:g}] to [0, 1]"
     return similarity
+
+
+def describe_similarity(fn: SimilarityFn) -> str:
+    """Short human-readable description of a similarity function (for ``ChannelSpec.metric``)."""
+    if fn is cosine01:
+        return "max(0, cosine)"
+    doc = (getattr(fn, "__doc__", None) or "").strip().splitlines()
+    return doc[0] if doc else getattr(fn, "__name__", "custom similarity")
