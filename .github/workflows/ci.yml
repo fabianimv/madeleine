@@ -31,6 +31,8 @@ jobs:
   test:
     name: Tests (Python ${{ matrix.python-version }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # macOS/Windows have not been verified yet: report, but don't gate merges on them.
+    continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
