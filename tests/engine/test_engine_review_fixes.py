@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -151,3 +151,61 @@ def test_r13_engine_out_of_order_cues(make_engine: EngineFactory) -> None:
         return len(eng.sense(eng.build_cue(context=ctx, include_time=False)))
 
     assert [fire(1), fire(100), fire(2)] == [1, 1, 0]
+
+
+# -- R15: forget / sense race ------------------------------------------------------------
+@pytest.mark.parametrize("kind", ["memory", "sqlite"])
+def test_r15_claim_requires_existing_memory(kind: str, tmp_path: Path) -> None:
+    store = _one_memory_store(kind, tmp_path)
+    assert not store.claim_trigger("mem_missing", T, timedelta(hours=6))
+    assert store.last_triggered("mem_missing") is None
+    assert store.delete("mem_a")
+    assert not store.claim_trigger("mem_a", T, timedelta(hours=6))
+    assert store.last_triggered("mem_a") is None
+    store.close()
+
+
+def test_r15_forget_during_sense_enqueues_nothing(tmp_path: Path, clock: FakeClock) -> None:
+    path = tmp_path / "race.db"
+    config = MadeleineConfig(db_path=str(path))
+    sensing = create_engine(config, clock=clock, registry=fake_registry())
+    forgetting = create_engine(config, clock=clock, registry=fake_registry())
+    m = sensing.remember("forget me", context=SensoryContext(T, geohash=PARIS))
+    store = sensing.store
+    original = store.get_many
+
+    def get_many_then_forget(ids: Sequence[str]) -> list[Memory]:
+        got = original(ids)
+        assert forgetting.forget(m.id)  # another process forgets after the fetch
+        return got
+
+    store.get_many = get_many_then_forget  # type: ignore[method-assign]
+    fired = sensing.sense(sensing.build_cue(context=SensoryContext(T, geohash=PARIS)))
+    assert fired == []
+    assert sensing.queue.pending_count() == 0
+    assert sensing.store.last_triggered(m.id) is None
+    sensing.close()
+    forgetting.close()
+
+
+def test_r15_sqlite_delete_purges_queue_in_same_transaction(
+    tmp_path: Path, clock: FakeClock
+) -> None:
+    path = tmp_path / "purge.db"
+    eng = create_engine(MadeleineConfig(db_path=str(path)), clock=clock, registry=fake_registry())
+    m = eng.remember("x", context=SensoryContext(T, geohash=PARIS))
+    other = eng.remember("y", context=SensoryContext(T, geohash=PARIS))
+    assert len(eng.sense(eng.build_cue(context=SensoryContext(T, geohash=PARIS)))) == 2
+    assert eng.store.delete(m.id)  # store alone, no queue.discard_memory
+    assert [r.memory.id for r in eng.queue.peek()] == [other.id]
+    eng.close()
+
+
+def test_r15_listener_may_forget_during_sense(make_engine: EngineFactory) -> None:
+    eng = make_engine()
+    m = eng.remember("x", context=SensoryContext(T, geohash=PARIS))
+    eng.queue.subscribe(lambda rec: eng.forget(rec.memory.id))  # re-entrant, no deadlock
+    eng.sense(eng.build_cue(context=SensoryContext(T, geohash=PARIS)))
+    assert eng.store.count() == 0
+    assert eng.queue.pending_count() == 0
+    assert eng.store.last_triggered(m.id) is None

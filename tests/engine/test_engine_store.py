@@ -315,6 +315,8 @@ def test_claim_trigger_is_atomic_across_connections(tmp_path: Path) -> None:
 
     path = tmp_path / "claim.db"
     stores = [SQLiteMemoryStore(path) for _ in range(2)]
+    _register(stores[0])
+    stores[0].add(make_memory("mem_x", text=f32([1, 0, 0, 0])))
     wins: list[bool] = []
     lock = threading.Lock()
 

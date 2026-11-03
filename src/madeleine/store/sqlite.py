@@ -608,6 +608,8 @@ class SQLiteMemoryStore:
         return [by_id[i] for i in memory_ids if i in by_id]
 
     def delete(self, memory_id: str) -> bool:
+        """Delete the memory, its vectors, raw data, triggers and pending queue entries in one
+        transaction, then checkpoint the WAL (freed pages are zeroed: ``secure_delete``)."""
         with self._db.write() as conn:
             row = conn.execute("SELECT rowid FROM memories WHERE id = ?", (memory_id,)).fetchone()
             if row is None:
@@ -626,6 +628,9 @@ class SQLiteMemoryStore:
             conn.execute("DELETE FROM vectors WHERE memory_rowid = ?", (rowid,))
             conn.execute("DELETE FROM raw_blobs WHERE memory_id = ?", (memory_id,))
             conn.execute("DELETE FROM triggers WHERE memory_id = ?", (memory_id,))
+            # The queue table lives in the same file: its pending recollections of this memory
+            # go in the same transaction, whichever connection the queue uses (R15).
+            conn.execute("DELETE FROM queue WHERE memory_id = ?", (memory_id,))
             conn.execute("DELETE FROM memories WHERE rowid = ?", (rowid,))
             self._db.mark_vec_dirty(conn)
         self._db.checkpoint()
@@ -703,9 +708,13 @@ class SQLiteMemoryStore:
 
         Refractory means *any* recorded trigger ``t`` with ``abs(at - t) < refractory_period``
         (not only the latest one), so out-of-order and future-dated cues cannot re-open the
-        window (R13).
+        window (R13). Returns ``False`` without recording anything when the memory does not
+        exist (any more): a ``sense`` racing a ``forget`` cannot leave an orphan trigger or
+        enqueue the forgotten memory (R15).
         """
         with self._db.write() as conn:
+            if conn.execute("SELECT 1 FROM memories WHERE id = ?", (memory_id,)).fetchone() is None:
+                return False
             if _fired_within(conn, memory_id, at, refractory_period):
                 return False
             _insert_trigger(conn, memory_id, at)

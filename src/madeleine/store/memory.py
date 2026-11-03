@@ -150,9 +150,12 @@ class InMemoryStore:
 
     def claim_trigger(self, memory_id: str, at: datetime, refractory_period: timedelta) -> bool:
         """Atomically record a trigger unless the memory is refractory: any recorded trigger
-        within ``refractory_period`` of ``at`` (not only the latest) blocks it."""
+        within ``refractory_period`` of ``at`` (not only the latest) blocks it, and so does a
+        memory that does not exist (any more)."""
         with self._lock:
             self._check_open()
+            if memory_id not in self._memories:
+                return False
             times = self._triggers.get(memory_id, ())
             if any(is_refractory(t, at, refractory_period) for t in times):
                 return False

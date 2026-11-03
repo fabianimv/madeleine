@@ -114,7 +114,7 @@ class Madeleine:
         self._owns_queue = owns_queue
         self._registered: set[ChannelName] = set()
         self._register_lock = threading.Lock()
-        self._push_lock = threading.Lock()
+        self._push_lock = threading.RLock()  # re-entrant: queue listeners may call forget
         self._closed = False
 
     # -- protocol properties -------------------------------------------------------------
@@ -327,19 +327,20 @@ class Madeleine:
                     break
                 if not self._claim(scored.memory.id, at):
                     continue
-                fired.append(
-                    Recollection(
-                        id=new_id("rec"),
-                        match=scored,
-                        cue_id=cue.id,
-                        cue_channels=cue.channels,
-                        triggered_at=at,
-                        mode=RecallMode.PUSH,
-                        cue_source=cue.source,
-                    )
+                rec = Recollection(
+                    id=new_id("rec"),
+                    match=scored,
+                    cue_id=cue.id,
+                    cue_channels=cue.channels,
+                    triggered_at=at,
+                    mode=RecallMode.PUSH,
+                    cue_source=cue.source,
                 )
-        for rec in fired:
-            self._queue.put(rec)
+                # Enqueued under the push lock so an in-process ``forget`` cannot slip in
+                # between the claim and the put (R15). Across processes, the store refuses to
+                # claim a deleted memory and the SQLite queue refuses orphans.
+                self._queue.put(rec)
+                fired.append(rec)
         if fired:
             _log.debug("cue %s fired %d recollection(s)", cue.id, len(fired))
         return fired
@@ -354,8 +355,11 @@ class Madeleine:
         return self._queue.drain(limit) if drain else self._queue.peek(limit)
 
     def forget(self, memory_id: str) -> bool:
-        existed = self._store.delete(memory_id)
-        self._queue.discard_memory(memory_id)
+        """Delete a memory everywhere. Serialised with ``sense`` in this process; the SQLite
+        store also removes the memory's queue rows in its delete transaction."""
+        with self._push_lock:
+            existed = self._store.delete(memory_id)
+            self._queue.discard_memory(memory_id)
         return existed
 
     def close(self) -> None:
