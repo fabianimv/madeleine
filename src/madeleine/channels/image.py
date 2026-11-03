@@ -1,9 +1,12 @@
 """The ``image`` channel: still images.
 
-* **Adapter** - bytes (``mime_type`` given or sniffed from the magic number) or a local
-  reference (``uri=`` / a string value: ``file://`` URI or a path). Remote URLs
-  (``http(s)://``...) are rejected: madeleine never downloads media. The adapter does not
-  read files; it validates that the file exists and records a ``file://`` URI.
+* **Adapter** - bytes (``mime_type`` given or sniffed from the magic number) or, only when
+  constructed with ``allow_local_files=True``, a local reference (``uri=`` / a string
+  value: ``file://`` URI or a path). Local references are refused by default (before any
+  filesystem access, with a message that does not depend on the file existing). Remote
+  URLs (``http(s)://``...) are always rejected: madeleine never downloads media. The
+  adapter does not read files; it validates that the file exists, is at most
+  :data:`MAX_MEDIA_BYTES`, and records a ``file://`` URI.
 * **Embedder** - :class:`OpenClipEmbedder` (``[image]`` extra; default ``ViT-B-32`` with
   ``laion2b_s34b_b79k`` weights, 512-d, ~600 MB download on first use), or any
   :class:`~madeleine.core.types.Embedder` you pass (the hash registry uses
@@ -29,7 +32,9 @@ from typing import Any, Final
 
 from madeleine.channels._extras import import_extra
 from madeleine.channels._media import (
+    MAX_MEDIA_BYTES,
     base_mime,
+    check_uri_label,
     coerce_bytes,
     guess_mime_from_path,
     normalize_file_uri,
@@ -72,8 +77,6 @@ DEFAULT_IMAGE_MODEL: Final = "ViT-B-32"
 DEFAULT_IMAGE_PRETRAINED: Final = "laion2b_s34b_b79k"
 IMAGE_COSINE_LO: Final = 0.6
 IMAGE_COSINE_HI: Final = 0.95
-MAX_MEDIA_BYTES: Final = 32 * 1024 * 1024
-"""Largest accepted in-memory media payload (32 MiB)."""
 
 _KNOWN_DIMS: Final[dict[str, int]] = {
     "ViT-B-32": 512,
@@ -101,10 +104,21 @@ def parse_image_model(spec: str) -> tuple[str, str | None]:
 
 
 class ImageAdapter:
-    """Bytes (+ optional ``mime_type``) or a local ``uri``/path -> image observation."""
+    """Bytes (+ optional ``mime_type``) or a local ``uri``/path -> image observation.
 
-    def __init__(self, *, max_bytes: int = MAX_MEDIA_BYTES) -> None:
+    ``allow_local_files`` (default **False**) gates every local file reference: a
+    ``file://``/path ``uri`` or string ``value``, and a local ``uri`` sent alongside bytes.
+    """
+
+    def __init__(
+        self, *, max_bytes: int = MAX_MEDIA_BYTES, allow_local_files: bool = False
+    ) -> None:
         self._max_bytes = max_bytes
+        self._allow_local_files = allow_local_files
+
+    @property
+    def allow_local_files(self) -> bool:
+        return self._allow_local_files
 
     @property
     def channel(self) -> ChannelName:
@@ -126,6 +140,7 @@ class ImageAdapter:
                 )
             if not mime.startswith("image/"):
                 raise ObservationError(f"image signal has non-image mime_type {mime!r}")
+            check_uri_label(signal.uri, IMAGE, allow_local_files=self._allow_local_files)
             return Observation(IMAGE, data=data, mime_type=mime, uri=signal.uri)
         ref = signal.value if isinstance(signal.value, str) else None
         ref = ref or signal.uri
@@ -135,7 +150,9 @@ class ImageAdapter:
             )
         if not ref:
             raise ObservationError("image signal needs bytes or a file uri")
-        uri, path = normalize_file_uri(ref, IMAGE)
+        uri, path = normalize_file_uri(
+            ref, IMAGE, allow_local_files=self._allow_local_files, max_bytes=self._max_bytes
+        )
         mime = base_mime(signal.mime_type) or guess_mime_from_path(path)
         if mime is not None and not mime.startswith("image/"):
             raise ObservationError(f"image file has non-image mime_type {mime!r}")
@@ -242,15 +259,18 @@ def make_image_channel(
     *,
     embedder: Embedder | None = None,
     similarity: SimilarityFn | None = None,
+    allow_local_files: bool | None = None,
 ) -> Channel:
     """The ``image`` channel.
 
     Defaults to :class:`OpenClipEmbedder` for ``config.image_model``
     (``"<model>/<pretrained>"``) with :data:`image_similarity`. A custom ``embedder``
     defaults to :data:`image_similarity` too unless it is a ``HashEmbedder`` (then
-    ``cosine01``); pass ``similarity`` to override.
+    ``cosine01``); pass ``similarity`` to override. ``allow_local_files`` (default
+    ``config.allow_local_files``, itself False) is passed to :class:`ImageAdapter`.
     """
     cfg = config or MadeleineConfig()
+    allow = cfg.allow_local_files if allow_local_files is None else allow_local_files
     if embedder is None:
         model, pretrained = parse_image_model(cfg.image_model)
         embedder = OpenClipEmbedder(model, pretrained)
@@ -266,4 +286,5 @@ def make_image_channel(
         model_id=embedder.model_id,
         extra="image" if is_clip else None,
     )
-    return Channel(spec=spec, adapter=ImageAdapter(), embedder=embedder, similarity=similarity)
+    adapter = ImageAdapter(allow_local_files=allow)
+    return Channel(spec=spec, adapter=adapter, embedder=embedder, similarity=similarity)

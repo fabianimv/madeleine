@@ -44,9 +44,29 @@ offline = hash_registry()                   # HashEmbedder for text/image/audio;
   the hash embedder (with one warning per process). `"hash"` always uses the hash
   embedder. `"sentence-transformers"` requires the library, and the first `embed` raises
   if it is missing.
-* `hash_registry(channels=..., dim=256)` uses `HashEmbedder` + `cosine01` for
-  text/image/audio and the real deterministic encoders for time/geo/biometric. Tests, the
-  demo and the evals use it.
+* `hash_registry(channels=..., dim=256, *, allow_local_files=False)` uses `HashEmbedder`
+  for text/image/audio and the real deterministic encoders for time/geo/biometric. Text
+  is scored with `rescaled_cosine(0.10, 0.45)` (the lexical hash calibration), image and
+  audio with `cosine01`. Tests, the demo and the evals use it.
+
+### Local files (off by default)
+
+Media signals can name a file on the server's disk (`uri="file:///…"`, a bare or `~`
+path, a Windows drive path, or a string `value`) **only when local files are enabled**:
+`MadeleineConfig.allow_local_files=True` (env `MADELEINE_ALLOW_LOCAL_FILES=1`, CLI
+`serve --allow-file-uris`). `default_registry(config)` passes the flag to the `image` and
+`audio` adapters, `hash_registry(allow_local_files=...)` and
+`make_image_channel`/`make_audio_channel(..., allow_local_files=...)` take it directly,
+and `ImageAdapter`/`AudioAdapter(allow_local_files=False)` enforce it. Because the check
+lives in the adapters, every surface (MCP, HTTP, webhooks, the library) obeys it.
+
+When disabled, every local reference is refused with one constant `ObservationError`
+that is raised **before any filesystem access** and never depends on whether the file
+exists (no file-existence oracle). A local `uri` sent next to bytes is refused too
+(it would be stored with the memory). Bytes always work; remote `uri`s next to bytes
+are kept as labels. When enabled, the file must exist and be at most 32 MiB
+(`MAX_MEDIA_BYTES`, the same cap as in-memory bytes); embedders re-check the size before
+reading.
 
 The stores record each channel's `dim` and `model_id`, so switching the text backend on
 an existing database is refused (hash: `hash-v1/dim=256`; MiniLM:
@@ -75,8 +95,10 @@ Python's salted `hash()`, so vectors are identical across processes and machines
   "automobile" are unrelated.
 * **Bytes / URIs**: a pseudo-random unit vector seeded by the content hash. Identical
   content gives an identical vector. Different content gives a cosine of about
-  N(0, 1/dim). A readable `file://` URI is hashed by the file's content, so bytes and a path
-  to the same file agree. Any other URI is hashed by its string.
+  N(0, 1/dim). A `uri` is hashed by its string: the hash embedder **never reads files**,
+  so it cannot read or fingerprint a file the adapter did not authorise. Bytes and a path
+  to the same file therefore get different vectors (adapters normalise paths to one
+  absolute `file://` URI, so two references to the same file agree).
 
 ### time (`channels/time.py`)
 
@@ -126,8 +148,9 @@ message lists the allowed names.
 ### image (`channels/image.py`)
 
 The adapter accepts bytes, using `mime_type` if given or sniffing PNG/JPEG/GIF/WebP/BMP/TIFF
-from the data. It also accepts a local file as `uri=` or as a string value (`file://`
-or a path). The adapter checks that the file exists but does not read it. **Remote URLs
+from the data. With local files enabled (see above) it also accepts a local file as
+`uri=` or as a string value (`file://` or a path). The adapter checks that the file exists
+and its size but does not read it. **Remote URLs
 (`http(s)://`, `s3://`, …) are rejected**, because madeleine never downloads media.
 Payloads are limited to 32 MiB.
 `OpenClipEmbedder(model="ViT-B-32", pretrained="laion2b_s34b_b79k")` returns L2-normalised
@@ -142,7 +165,8 @@ should be tuned with the evals on real photos.
 ### audio (`channels/audio.py`)
 
 The adapter accepts encoded bytes (WAV/FLAC/OGG/MP3/AIFF sniffed, or any `audio/*` mime
-that libsndfile decodes), raw 16-bit PCM, or a local file. For raw PCM, give
+that libsndfile decodes), raw 16-bit PCM, or (with local files enabled) a local file.
+For raw PCM, give
 `mime_type="audio/L16; rate=16000"` (big-endian, RFC 2586) or `"audio/pcm; rate=16000"`
 (little-endian), optionally with `channels=N`. Remote URLs are rejected.
 `ClapEmbedder("laion/clap-htsat-unfused")` processes audio in four steps:

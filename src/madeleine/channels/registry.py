@@ -142,7 +142,11 @@ def _unknown(name: ChannelName) -> ChannelNotAvailableError:
 
 
 def default_registry(config: MadeleineConfig | None = None) -> DefaultChannelRegistry:
-    """Registry of ``config.channels`` with real backends (models load lazily on first use)."""
+    """Registry of ``config.channels`` with real backends (models load lazily on first use).
+
+    The ``image``/``audio`` adapters get ``config.allow_local_files`` (default False: media
+    must be sent as bytes).
+    """
     cfg = config or MadeleineConfig()
     registry = DefaultChannelRegistry()
     for name in dict.fromkeys(cfg.channels):
@@ -156,9 +160,17 @@ def default_registry(config: MadeleineConfig | None = None) -> DefaultChannelReg
         elif name == BIOMETRIC:
             channel = make_biometric_channel()
         elif name == IMAGE:
-            channel = _optional("image", IMAGE, lambda: make_image_channel(cfg))
+            channel = _optional(
+                "image",
+                IMAGE,
+                lambda: make_image_channel(cfg, allow_local_files=cfg.allow_local_files),
+            )
         elif name == AUDIO:
-            channel = _optional("audio", AUDIO, lambda: make_audio_channel(cfg))
+            channel = _optional(
+                "audio",
+                AUDIO,
+                lambda: make_audio_channel(cfg, allow_local_files=cfg.allow_local_files),
+            )
         elif name == SMELL:
             _log.warning("skipping channel 'smell': %s", SMELL_UNAVAILABLE)
             channel = None
@@ -170,18 +182,32 @@ def default_registry(config: MadeleineConfig | None = None) -> DefaultChannelReg
 
 
 def hash_registry(
-    channels: Iterable[ChannelName] = BUILTIN_CHANNELS, dim: int = 256
+    channels: Iterable[ChannelName] = BUILTIN_CHANNELS,
+    dim: int = 256,
+    *,
+    allow_local_files: bool = False,
 ) -> DefaultChannelRegistry:
-    """Offline registry: ``text``/``image``/``audio`` use ``HashEmbedder(dim)`` + cosine01;
-    ``time``/``geo``/``biometric`` use their real deterministic encoders."""
+    """Offline registry that never downloads anything (tests, demo, evals).
+
+    * ``text`` uses ``HashEmbedder(dim)`` with
+      :data:`~madeleine.channels.text.hash_text_similarity` (``rescaled_cosine(0.10, 0.45)``,
+      the lexical hash calibration).
+    * ``image``/``audio`` use ``HashEmbedder(dim)`` with ``cosine01``; their adapters get
+      ``allow_local_files`` (default False).
+    * ``time``/``geo``/``biometric`` use their real deterministic encoders.
+    """
     registry = DefaultChannelRegistry()
     for name in dict.fromkeys(channels):
         if name == TEXT:
             channel = make_text_channel(embedder=HashEmbedder(TEXT, dim))
         elif name == IMAGE:
-            channel = make_image_channel(embedder=HashEmbedder(IMAGE, dim))
+            channel = make_image_channel(
+                embedder=HashEmbedder(IMAGE, dim), allow_local_files=allow_local_files
+            )
         elif name == AUDIO:
-            channel = make_audio_channel(embedder=HashEmbedder(AUDIO, dim))
+            channel = make_audio_channel(
+                embedder=HashEmbedder(AUDIO, dim), allow_local_files=allow_local_files
+            )
         elif name == TIME:
             channel = make_time_channel()
         elif name == GEO:
