@@ -244,6 +244,11 @@ async def test_structured_content_mirrors_text(engine: FakeEngine, mode: str) ->
         ("sense", {"text": "a", "signals": [{"channel": "text", "value": "b"}]}, "more than one"),
         ("sense", {"signals": [{"channel": "text", "valu": "typo"}]}, "valu"),
         ("recall", {}, "at least one"),
+        ("sense", {}, "cue is empty"),
+        ("sense", {"at": "2026-06-01T21:30:00+02:00"}, "cue is empty"),
+        ("sense", {"text": "x", "source": "s" * 65}, "source"),
+        ("sense", {"text": "x", "source": ""}, "source"),
+        ("remember", {"content": "x", "metadata": {"k": 1}}, "metadata"),
         ("recall", {"query": "x", "k": 0}, "k"),
         ("pending_recollections", {"limit": 0}, "limit"),
         ("pending_recollections", {"limit": 1001}, "limit"),
@@ -324,3 +329,30 @@ async def test_tool_defaults_read_engine_now_without_building_cues(
         await call(c, "recall", {"query": "x"})
         await call(c, "sense", {"text": "x"})
     assert built == ["mcp", "mcp"]  # one cue per recall/sense, none just to read the clock
+
+
+async def test_mcp_matches_http_surface(engine: FakeEngine, mode: str) -> None:
+    """R18: metadata on remember, prompt_line on recollections, source up to 64 chars."""
+    async with connect(engine, mode) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        assert "metadata" in tools["remember"].input_schema["properties"]
+        mem = await call(
+            client, "remember", {"content": "Ana proposed", "metadata": {"app": "notes"}}
+        )
+        assert mem["metadata"] == {"app": "notes"}
+        fired = await call(client, "sense", {"text": "Ana proposed", "source": "s" * 64})
+        assert fired
+        assert fired[0]["prompt_line"].startswith("[madeleine ")
+        assert "Ana proposed" in fired[0]["prompt_line"]
+        resource = await client.read_resource(PENDING_URI)
+        contents = resource.contents[0]
+        assert isinstance(contents, TextResourceContents)
+        assert json.loads(contents.text)[0]["prompt_line"] == fired[0]["prompt_line"]
+        drained = await call(client, "pending_recollections")
+        assert drained[0]["prompt_line"] == fired[0]["prompt_line"]
+        # recall still rejects unknown channels (HTTP is to be aligned on this).
+        assert "unknown channel" in await call_error(
+            client, "recall", {"query": "Ana", "channels": ["nope"]}
+        )
+        # A location alone is a valid cue.
+        assert await call(client, "sense", {"geohash": EIFFEL}) == []

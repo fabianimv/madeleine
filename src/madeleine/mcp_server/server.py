@@ -46,6 +46,7 @@ from madeleine.core.types import (
     ObservationError,
     RawSignal,
     RecallQuery,
+    Recollection,
 )
 from madeleine.mcp_server._inputs import SignalInput, check_unique_channels, parse_signals
 from madeleine.mcp_server.notifier import PENDING_URI, PendingNotifier
@@ -110,6 +111,20 @@ def _json_result(payload: JSONValue) -> CallToolResult:
     return CallToolResult(
         content=[TextContent(type="text", text=text)], structured_content=structured
     )
+
+
+def _recollection_json(rec: Recollection) -> dict[str, JSONValue]:
+    """A recollection as JSON plus its ready-to-inject ``prompt_line`` (as over HTTP)."""
+    out = rec.to_dict()
+    out["prompt_line"] = rec.to_prompt_line()
+    return out
+
+
+EMPTY_CUE = "the cue is empty: send text, signals, biometric data or a location"
+"""``sense`` refusal when nothing was sensed (same wording as HTTP ``/cues``)."""
+
+SOURCE_MAX_LENGTH = 64
+"""Longest accepted ``sense`` source label (same cap as HTTP)."""
 
 
 async def _in_thread(fn: Callable[[], _T]) -> _T:
@@ -208,6 +223,15 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
                 str | None,
                 Field(description="Optional pointer (URI/path) to related media; never opened."),
             ] = None,
+            metadata: Annotated[
+                dict[str, str] | None,
+                Field(
+                    description=(
+                        "Optional string key/value annotations stored with the memory "
+                        '(not embedded, not matched), e.g. {"app": "notes"}.'
+                    )
+                ),
+            ] = None,
         ) -> CallToolResult:
             def run() -> JSONValue:
                 now = engine.now()
@@ -215,7 +239,9 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
                     now=now, at=at, geohash=geohash, lat=lat, lon=lon, tags=tags, salience=salience
                 )
                 raw = self._signals(signals, now)
-                memory = engine.remember(content, raw, context=context, media_ref=media_ref)
+                memory = engine.remember(
+                    content, raw, context=context, media_ref=media_ref, metadata=metadata
+                )
                 return memory.to_dict()
 
             return _json_result(await _in_thread(run))
@@ -300,7 +326,12 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
             ] = None,
             signals: Signals = None,
             source: Annotated[
-                str, Field(description="Who is reporting the cue (free text).")
+                str,
+                Field(
+                    description="Who is reporting the cue (free text).",
+                    min_length=1,
+                    max_length=SOURCE_MAX_LENGTH,
+                ),
             ] = "mcp",
         ) -> CallToolResult:
             def run() -> JSONValue:
@@ -315,8 +346,10 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
                     items.append({"channel": "biometric", "value": biometric})
                 items.extend(signals or ())
                 raw = self._signals(items, now)
+                if not raw and context.geohash is None:
+                    raise ObservationError(EMPTY_CUE)
                 cue = engine.build_cue(raw, context=context, include_time=True, source=source)
-                return [r.to_dict() for r in engine.sense(cue)]
+                return [_recollection_json(r) for r in engine.sense(cue)]
 
             return _json_result(await _in_thread(run))
 
@@ -337,7 +370,7 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
         ) -> CallToolResult:
             def run() -> JSONValue:
                 recs = engine.pending_recollections(limit=limit, drain=drain)
-                return [r.to_dict() for r in recs]
+                return [_recollection_json(r) for r in recs]
 
             return _json_result(await _in_thread(run))
 
@@ -378,10 +411,11 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
             sense,
             description=(
                 "Report what is being sensed right now (PUSH): text, location, biometrics or "
-                "raw signals. The current time is always part of the cue. Memories whose "
-                "encoding context matches strongly fire as involuntary recollections: they "
-                "are returned here and also queued (see pending_recollections). A memory "
-                "that just fired will not fire again for a while (habituation)."
+                "raw signals (at least one of them). The current time is always part of the "
+                "cue. Memories whose encoding context matches strongly fire as involuntary "
+                "recollections: they are returned here and also queued (see "
+                "pending_recollections). A memory that just fired will not fire again for a "
+                "while (habituation)."
             ),
             annotations=ToolAnnotations(title="Sense", read_only_hint=False, idempotent_hint=False),
             structured_output=False,
@@ -416,7 +450,7 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
 
         async def pending() -> str:
             recs = await anyio.to_thread.run_sync(lambda: engine.pending_recollections(drain=False))
-            return json.dumps([r.to_dict() for r in recs], ensure_ascii=False)
+            return json.dumps([_recollection_json(r) for r in recs], ensure_ascii=False)
 
         self.resource(
             PENDING_URI,
