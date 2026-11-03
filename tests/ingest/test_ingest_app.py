@@ -467,3 +467,40 @@ def test_claude_code_settings_example() -> None:
     [hook] = entry["hooks"]
     assert hook["type"] == "command"
     assert hook["command"] == "uvx madeleine-mcp hook claude-code"
+
+
+# -- R12: wrong-typed webhook fields are 4xx, never 500 --------------------------------
+
+_WRONG_TYPES: list[Any] = [123, 1.5, True, [], ["x"], {}, {"a": 1}, ""]
+_TOP_FIELDS = [
+    "at", "date", "time_fired", "text", "geohash", "lat", "lon", "latitude", "longitude",
+    "tags", "salience", "biometric", "signals", "entity_id", "state", "old_state", "event",
+    "event_type", "zone", "attributes", "data", "heart_rate", "focus", "battery",
+    "photo_b64", "photo_mime_type", "audio_b64", "audio_mime_type",
+]  # fmt: skip
+_SIGNAL_FIELDS = ["channel", "value", "data_b64", "mime_type", "uri", "at"]
+
+
+def _fuzz_bodies() -> Iterator[dict[str, Any]]:
+    for field in _TOP_FIELDS:
+        for bad in _WRONG_TYPES:
+            yield {"text": "hello", "entity_id": "light.hall", "state": "on", field: bad}
+    for field in _SIGNAL_FIELDS:
+        for bad in _WRONG_TYPES:
+            yield {"signals": [{"channel": "text", "value": "x", field: bad}]}
+
+
+@pytest.mark.parametrize("adapter", ["generic", "home_assistant", "ios_shortcuts"])
+def test_adapter_routes_never_500_on_wrong_types(engine: FakeEngine, adapter: str) -> None:
+    with TestClient(create_app(engine), raise_server_exceptions=False) as c:
+        for body in _fuzz_bodies():
+            r = c.post(f"/cues/{adapter}", json=body)
+            assert r.status_code < 500, (body, r.text)
+
+
+def test_signal_at_must_be_a_string(client: TestClient) -> None:
+    r = client.post(
+        "/cues/generic", json={"signals": [{"channel": "text", "value": "x", "at": 123}]}
+    )
+    assert r.status_code == 422
+    assert "signals[0].at" in r.json()["detail"]

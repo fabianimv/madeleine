@@ -24,6 +24,7 @@ __all__ = [
     "as_str",
     "as_tags",
     "build_context",
+    "check_signal_items",
     "is_missing",
     "merge_convenience_signals",
     "require_mapping",
@@ -105,6 +106,29 @@ def as_biometric(value: object, field: str = "biometric") -> dict[str, float]:
         if number is not None:
             out[key] = number
     return out
+
+
+_SIGNAL_STRING_KEYS = ("channel", "data_b64", "mime_type", "uri", "at")
+
+
+def check_signal_items(value: object, field: str = "signals") -> list[Mapping[str, Any]]:
+    """Validate a JSON list of signal objects before :mod:`madeleine.core.serde` parses it.
+
+    Webhook payloads are untyped, so a wrong-typed ``at``/``uri``/``mime_type``... must be a
+    readable :class:`ObservationError` (HTTP 422), never a crash (HTTP 500). ``None`` -> ``[]``.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ObservationError(f"'{field}' must be a list of signal objects")
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise ObservationError("each signal must be an object with a 'channel'")
+        for key in _SIGNAL_STRING_KEYS:
+            raw = item.get(key)
+            if raw is not None and not isinstance(raw, str):
+                raise ObservationError(f"'{field}[{index}].{key}' must be a string")
+    return list(value)
 
 
 def require_mapping(value: object, field: str) -> Mapping[str, Any]:
