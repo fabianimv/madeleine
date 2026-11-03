@@ -300,3 +300,24 @@ async def test_tool_defaults_use_the_engine_clock(engine: FakeEngine, clock: Fak
         await call(c, "remember", {"content": "Eiffel tower"})
         fired = await call(c, "sense", {"text": "Eiffel tower"})
         assert fired[0]["triggered_at"] == clock.now().isoformat()
+
+
+async def test_tool_defaults_read_engine_now_without_building_cues(
+    engine: FakeEngine, clock: FakeClock
+) -> None:
+    """R29: "now" comes from ``engine.now()``, not from a throwaway cue."""
+    built: list[str] = []
+    real_build = engine.build_cue
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        built.append(str(kwargs.get("source")))
+        return real_build(*args, **kwargs)
+
+    engine.build_cue = spy  # type: ignore[method-assign]
+    clock.advance(timedelta(days=1))
+    async with Client(create_server(engine)) as c:
+        mem = await call(c, "remember", {"content": "x"})
+        assert mem["context"]["timestamp"] == clock.now().isoformat()
+        await call(c, "recall", {"query": "x"})
+        await call(c, "sense", {"text": "x"})
+    assert built == ["mcp", "mcp"]  # one cue per recall/sense, none just to read the clock

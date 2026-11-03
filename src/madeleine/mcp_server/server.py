@@ -120,16 +120,6 @@ async def _in_thread(fn: Callable[[], _T]) -> _T:
         raise ToolError(str(exc)) from exc
 
 
-def _engine_now(engine: MemoryEngine) -> datetime:
-    """The engine's notion of "now".
-
-    ``MemoryEngine`` does not expose its clock, but ``build_cue`` stamps an empty cue
-    with it; this keeps tool defaults consistent with injected (fake) clocks.
-    """
-    cue = engine.build_cue((), include_time=False, include_geo=False, source="mcp")
-    return cue.context.timestamp
-
-
 class MadeleineMCPServer(MCPServer[dict[str, Any]]):
     """An :class:`MCPServer` bound to a :class:`MemoryEngine` (see :func:`create_server`)."""
 
@@ -220,7 +210,7 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
             ] = None,
         ) -> CallToolResult:
             def run() -> JSONValue:
-                now = _engine_now(engine)
+                now = engine.now()
                 context = serde.context_from_fields(
                     now=now, at=at, geohash=geohash, lat=lat, lon=lon, tags=tags, salience=salience
                 )
@@ -261,7 +251,7 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
                     raise ObservationError(
                         "recall needs at least one of: query, geohash or lat/lon, at"
                     )
-                now = _engine_now(engine)
+                now = engine.now()
                 context = serde.context_from_fields(
                     now=now, at=at, geohash=geohash, lat=lat, lon=lon
                 )
@@ -314,7 +304,7 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
             ] = "mcp",
         ) -> CallToolResult:
             def run() -> JSONValue:
-                now = _engine_now(engine)
+                now = engine.now()
                 context = serde.context_from_fields(
                     now=now, at=at, geohash=geohash, lat=lat, lon=lon
                 )
