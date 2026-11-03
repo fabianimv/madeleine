@@ -536,3 +536,26 @@ def test_madeleine_errors_are_mapped_with_their_message(
         r = c.post("/memories", json={"content": "x"})
     assert r.status_code == status
     assert r.json() == {"detail": str(exc)}
+
+
+# -- R18: /recall consistency with MCP -------------------------------------------------
+
+
+def test_recall_unknown_channels_is_422(client: TestClient, engine: FakeEngine) -> None:
+    engine.remember("rain on a tin roof")
+    r = client.post("/recall", json={"query": "rain", "channels": ["text", "smell"]})
+    assert r.status_code == 422
+    assert "smell" in r.json()["detail"]
+    assert "available" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("word", ["null", "None", "unknown", "unavailable"])
+def test_recall_query_is_literal(client: TestClient, engine: FakeEngine, word: str) -> None:
+    engine.remember(f"the label said {word}")
+    r = client.post("/recall", json={"query": word})
+    assert r.status_code == 200, r.text
+    assert [h["memory"]["content"] for h in r.json()["results"]] == [f"the label said {word}"]
+
+
+def test_recall_empty_query_means_no_query(client: TestClient) -> None:
+    assert client.post("/recall", json={"query": ""}).status_code == 422

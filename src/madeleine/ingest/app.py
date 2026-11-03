@@ -127,7 +127,8 @@ class MemoryIn(_ContextFields):
 class RecallIn(_ContextFields):
     """Body of ``POST /recall`` (the MCP ``recall`` tool's fields).
 
-    ``time`` takes part in the match only when ``at`` is given.
+    ``time`` takes part in the match only when ``at`` is given. ``query`` is used literally
+    (``""`` means no query). Unknown ``channels`` are rejected with 422.
     """
 
     query: str | None = None
@@ -407,7 +408,7 @@ def create_app(
         """PULL recall (fields of the ``recall`` tool); no side effects."""
         now = clk.now()
         signals = _signals(body.signals, now)
-        query = f.as_str(body.query, "query")
+        query = body.query or None  # taken literally ("" means "no query", as in MCP)
         if query is not None:
             if any(s.channel == TEXT for s in signals):
                 raise ObservationError("text given both as 'query' and inside 'signals'")
@@ -417,6 +418,13 @@ def create_app(
         )
         if not signals and context is None:
             raise ObservationError("recall needs a query, signals, a location or 'at'")
+        only: frozenset[str] | None = None
+        if body.channels:
+            known = engine.channels.names()
+            unknown = sorted(set(body.channels) - set(known))
+            if unknown:
+                raise ObservationError(f"unknown channel(s) {unknown}; available: {list(known)}")
+            only = frozenset(body.channels)
         cue = engine.build_cue(
             signals, context=context, include_time=body.at is not None, source="http:recall"
         )
@@ -424,7 +432,7 @@ def create_app(
             RecallQuery(
                 cue=cue,
                 k=body.k,
-                channels=frozenset(body.channels) if body.channels else None,
+                channels=only,
                 tags=frozenset(body.tags) if body.tags else None,
                 min_score=body.min_score,
             )
