@@ -859,10 +859,11 @@ class Clock(Protocol):
 
 
 class SystemClock:
-    """The real clock."""
+    """The real clock. Returns the current time in the machine's **local** UTC offset, so
+    that hour-of-day / weekday features of default ("now") timestamps match the user's day."""
 
     def now(self) -> datetime:
-        return utc_now()
+        return datetime.now().astimezone()
 
 
 @dataclass(frozen=True, slots=True)
