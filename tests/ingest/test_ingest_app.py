@@ -276,13 +276,33 @@ def test_pending_peek_drain_limit(client: TestClient, engine: FakeEngine, clock:
     engine.remember("one two three")
     engine.remember("one two four")
     client.post("/cues", json={"text": "one two three four"})
-    assert len(client.get("/recollections/pending?drain=false").json()["recollections"]) == 2
-    first = client.get("/recollections/pending?limit=1").json()["recollections"]
+    assert len(client.get("/recollections/pending").json()["recollections"]) == 2
+    assert len(client.get("/recollections/pending?limit=1").json()["recollections"]) == 1
+    assert engine.queue.pending_count() == 2  # GET only peeks
+    first = client.post("/recollections/drain?limit=1").json()["recollections"]
     assert len(first) == 1
     assert "prompt_line" in first[0]
     assert len(client.get("/recollections/pending").json()["recollections"]) == 1
-    assert client.get("/recollections/pending").json() == {"recollections": []}
+    assert len(client.post("/recollections/drain").json()["recollections"]) == 1
+    assert client.post("/recollections/drain").json() == {"recollections": []}
     assert client.get("/recollections/pending?limit=0").status_code == 422
+    assert client.post("/recollections/drain?limit=0").status_code == 422
+    assert client.post("/recollections/drain?limit=1001").status_code == 422
+
+
+@pytest.mark.parametrize("query", ["drain=true", "drain=false", "drain=1&limit=2"])
+def test_get_pending_never_drains(client: TestClient, engine: FakeEngine, query: str) -> None:
+    """R6: a GET (e.g. a cross-site <img src>) must not change state."""
+    engine.remember("one two three")
+    client.post("/cues", json={"text": "one two three"})
+    r = client.get(f"/recollections/pending?{query}")
+    assert r.status_code == 422
+    assert "POST /recollections/drain" in r.json()["detail"]
+    assert engine.queue.pending_count() == 1
+
+
+def test_drain_is_not_a_get(client: TestClient) -> None:
+    assert client.get("/recollections/drain").status_code == 405
 
 
 def test_channel_not_available_from_engine_is_400(engine: FakeEngine, clock: FakeClock) -> None:
@@ -452,6 +472,8 @@ def test_curl_script_covers_every_payload() -> None:
         assert f"{route_for(path)} {path.name}" in script, path.name
     for route in ("/healthz", "/recollections/pending", "/memories/${MEMORY_ID}"):
         assert route in script
+    assert 'call POST "/recollections/drain' in script
+    assert "drain=" not in script  # GET is peek-only (R6)
 
 
 def test_home_assistant_yaml_parses() -> None:

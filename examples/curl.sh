@@ -52,9 +52,10 @@ call POST /cues/home_assistant home_assistant_native_event.json
 call POST /cues/ios_shortcuts ios_shortcuts_location.json
 call POST /cues/ios_shortcuts ios_shortcuts_photo.json
 
-# Peek, then drain the queue of involuntary recollections (what the Claude Code hook does)
-call GET "/recollections/pending?drain=false"
-call GET "/recollections/pending?drain=true&limit=5"
+# Peek (GET never removes anything), then drain the queue of involuntary recollections
+# (what the Claude Code hook does in --url mode)
+call GET "/recollections/pending?limit=5"
+call POST "/recollections/drain?limit=5"
 
 # Forget a memory: DELETE /memories/{id}
 MEMORY_ID="$(curl -sS ${AUTH[@]+"${AUTH[@]}"} -H 'Content-Type: application/json' \

@@ -8,7 +8,9 @@ Routes (see ``ARCHITECTURE.md`` "HTTP surface"):
   ``ios_shortcuts`` or any adapter passed to :func:`create_app`).
 * ``POST /memories`` - same fields as the MCP ``remember`` tool -> ``Memory.to_dict()``.
 * ``POST /recall`` - PULL; same fields as the MCP ``recall`` tool -> ``{results}``.
-* ``GET /recollections/pending?drain=true&limit=`` -> ``{recollections}``.
+* ``GET /recollections/pending?limit=`` -> ``{recollections}`` (peek: removes nothing).
+* ``POST /recollections/drain?limit=`` -> ``{recollections}`` (removes what it returns; a
+  state change is never a ``GET``, so a cross-site ``<img src>`` cannot destroy the queue).
 * ``DELETE /memories/{memory_id}`` -> ``{deleted: true}`` (404 when unknown).
 * ``GET /healthz`` -> ``{status: "ok", version}`` (never requires the token).
 
@@ -518,10 +520,26 @@ def create_app(
 
     @app.get("/recollections/pending", tags=["recollections"])
     def get_pending(
-        drain: bool = True, limit: Annotated[int | None, Query(ge=1, le=1000)] = None
+        request: Request, limit: Annotated[int | None, Query(ge=1, le=1000)] = None
     ) -> dict[str, Any]:
-        """Queued involuntary recollections, oldest first (``drain=true`` removes them)."""
-        items = engine.pending_recollections(limit=limit, drain=drain)
+        """Queued involuntary recollections, oldest first, **without** removing them."""
+        if "drain" in request.query_params:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "GET /recollections/pending only peeks and takes no 'drain' parameter; "
+                    "use POST /recollections/drain?limit=N to remove recollections"
+                ),
+            )
+        items = engine.pending_recollections(limit=limit, drain=False)
+        return {"recollections": [_recollection_json(r) for r in items]}
+
+    @app.post("/recollections/drain", tags=["recollections"])
+    def drain_pending(
+        limit: Annotated[int | None, Query(ge=1, le=1000)] = None,
+    ) -> dict[str, Any]:
+        """Remove and return queued recollections, oldest first (each is delivered once)."""
+        items = engine.pending_recollections(limit=limit, drain=True)
         return {"recollections": [_recollection_json(r) for r in items]}
 
     @app.delete("/memories/{memory_id}", tags=["memories"])

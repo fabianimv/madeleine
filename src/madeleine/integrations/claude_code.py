@@ -16,7 +16,7 @@ Modes:
 
 * local (default): open the madeleine database (``--db`` or ``MADELEINE_DB``) and drain
   ``engine.pending_recollections()``;
-* remote: ``--url http://127.0.0.1:8765`` drains ``GET /recollections/pending`` of a running
+* remote: ``--url http://127.0.0.1:8765`` drains ``POST /recollections/drain`` of a running
   ``madeleine serve --transport http`` (token: ``--token`` or ``MADELEINE_API_TOKEN``).
 
 ``--sense-prompt`` first sends the prompt itself as a ``text`` cue, so what the user writes
@@ -167,7 +167,15 @@ def _is_loopback(host: str | None) -> bool:
         return False
 
 
-def _request(base: str, path: str, *, token: str | None, timeout: float, body: Any = None) -> Any:
+def _request(
+    base: str,
+    path: str,
+    *,
+    token: str | None,
+    timeout: float,
+    body: Any = None,
+    method: str | None = None,
+) -> Any:
     url = base.rstrip("/") + path
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in ("http", "https"):
@@ -179,9 +187,9 @@ def _request(base: str, path: str, *, token: str | None, timeout: float, body: A
         headers["Content-Type"] = "application/json"
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    method = "POST" if data else "GET"
+    verb = method or ("POST" if data else "GET")
     # Scheme checked above (http/https only).
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)  # noqa: S310
+    req = urllib.request.Request(url, data=data, headers=headers, method=verb)  # noqa: S310
     handlers: list[urllib.request.BaseHandler] = []
     if _is_loopback(parsed.hostname):
         handlers.append(urllib.request.ProxyHandler({}))  # never proxy a local server
@@ -215,11 +223,13 @@ def _remote_lines(args: argparse.Namespace, prompt: str | None) -> list[str]:
             )
         except Exception as exc:
             _warn(f"could not sense the prompt: {exc}")
-    query = urllib.parse.urlencode({"drain": "true", "limit": args.limit})
-    data = _request(args.url, f"/recollections/pending?{query}", token=token, timeout=args.timeout)
+    query = urllib.parse.urlencode({"limit": args.limit})
+    data = _request(
+        args.url, f"/recollections/drain?{query}", token=token, timeout=args.timeout, method="POST"
+    )
     items = data.get("recollections") if isinstance(data, Mapping) else None
     if not isinstance(items, list):
-        raise ValueError("unexpected response from /recollections/pending")
+        raise ValueError("unexpected response from /recollections/drain")
     return [_line_from_json(i) for i in items if isinstance(i, Mapping)]
 
 
