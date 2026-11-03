@@ -23,7 +23,7 @@ from madeleine.core.types import (
     Vector,
 )
 
-TEXT_DIM = 32
+TEXT_DIM = 128
 
 
 def _unit(values: Sequence[float]) -> Vector:
@@ -96,7 +96,7 @@ def _text_embed(obs: Observation) -> Vector:
     for tok in _tokens(obs.text or ""):
         h = hashlib.blake2b(tok.encode(), digest_size=8).digest()
         idx = int.from_bytes(h[:4], "little") % TEXT_DIM
-        acc[idx] += 1.0 if h[4] & 1 else -1.0
+        acc[idx] += 1.0
     return _unit(acc)
 
 
