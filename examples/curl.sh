@@ -5,7 +5,8 @@
 #   ./examples/curl.sh                        # run all samples
 #
 # Environment: MADELEINE_URL (default http://127.0.0.1:8765) and, if the server was started
-# with MADELEINE_API_TOKEN set, the same MADELEINE_API_TOKEN here.
+# with MADELEINE_API_TOKEN set, the same MADELEINE_API_TOKEN here. A non-loopback
+# MADELEINE_URL host must be in the server's MADELEINE_ALLOWED_HOSTS (else HTTP 421).
 set -euo pipefail
 
 URL="${MADELEINE_URL:-http://127.0.0.1:8765}"
@@ -52,9 +53,10 @@ call POST /cues/home_assistant home_assistant_native_event.json
 call POST /cues/ios_shortcuts ios_shortcuts_location.json
 call POST /cues/ios_shortcuts ios_shortcuts_photo.json
 
-# Peek, then drain the queue of involuntary recollections (what the Claude Code hook does)
-call GET "/recollections/pending?drain=false"
-call GET "/recollections/pending?drain=true&limit=5"
+# Peek (GET never removes anything), then drain the queue of involuntary recollections
+# (what the Claude Code hook does in --url mode)
+call GET "/recollections/pending?limit=5"
+call POST "/recollections/drain?limit=5"
 
 # Forget a memory: DELETE /memories/{id}
 MEMORY_ID="$(curl -sS ${AUTH[@]+"${AUTH[@]}"} -H 'Content-Type: application/json' \

@@ -8,11 +8,18 @@ prompt (Claude Code hook) or through the MCP server.
 ## 1. Run madeleine's HTTP server
 
 ```bash
-MADELEINE_API_TOKEN=change-me madeleine serve --transport http --host 0.0.0.0 --port 8765
+MADELEINE_API_TOKEN=change-me MADELEINE_ALLOWED_HOSTS=192.168.1.20 \
+  madeleine serve --transport http --host 0.0.0.0 --port 8765
 ```
 
 The server binds to `127.0.0.1` by default; `--host 0.0.0.0` exposes it on your LAN, so set
 a token (every route except `/healthz` then needs `Authorization: Bearer <token>`).
+
+`MADELEINE_ALLOWED_HOSTS` (comma-separated) lists the names Home Assistant uses to reach
+the server (`192.168.1.20` in the URL `http://192.168.1.20:8765/...`, or a hostname such as
+`madeleine.lan`). Requests carrying any other `Host` header are refused with 421, and
+browser requests from other origins with 403: this protects against DNS-rebinding attacks
+from web pages. Loopback names (`127.0.0.1`, `localhost`, `[::1]`) are always allowed.
 
 ## 2. Configure Home Assistant
 

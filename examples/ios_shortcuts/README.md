@@ -7,10 +7,14 @@ photographed. A Shortcut can send all of it to madeleine as a cue
 Prerequisite: madeleine's HTTP server reachable from the phone, with a token:
 
 ```bash
-MADELEINE_API_TOKEN=change-me madeleine serve --transport http --host 0.0.0.0 --port 8765
+MADELEINE_API_TOKEN=change-me MADELEINE_ALLOWED_HOSTS=192.168.1.20 \
+  madeleine serve --transport http --host 0.0.0.0 --port 8765
 ```
 
-(Over the internet, put it behind HTTPS, e.g. a reverse proxy or Tailscale.)
+`MADELEINE_ALLOWED_HOSTS` must list the host name the phone puts in the URL (here
+`http://192.168.1.20:8765`; a Tailscale or reverse-proxy name works too): other `Host`
+headers get HTTP 421 (DNS-rebinding protection). Over the internet, put the server behind
+HTTPS (a reverse proxy or Tailscale).
 
 ## Recipe: "Sense here"
 

@@ -15,6 +15,8 @@ from madeleine.testing import FakeClock, FakeEngine
 def _no_env_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MADELEINE_API_TOKEN", raising=False)
     monkeypatch.delenv("MADELEINE_MAX_BODY_BYTES", raising=False)
+    # TestClient sends "Host: testserver"; allow it on top of the loopback defaults (R1).
+    monkeypatch.setenv("MADELEINE_ALLOWED_HOSTS", "testserver")
 
 
 @pytest.fixture

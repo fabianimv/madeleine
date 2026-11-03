@@ -8,7 +8,9 @@ Routes (see ``ARCHITECTURE.md`` "HTTP surface"):
   ``ios_shortcuts`` or any adapter passed to :func:`create_app`).
 * ``POST /memories`` - same fields as the MCP ``remember`` tool -> ``Memory.to_dict()``.
 * ``POST /recall`` - PULL; same fields as the MCP ``recall`` tool -> ``{results}``.
-* ``GET /recollections/pending?drain=true&limit=`` -> ``{recollections}``.
+* ``GET /recollections/pending?limit=`` -> ``{recollections}`` (peek: removes nothing).
+* ``POST /recollections/drain?limit=`` -> ``{recollections}`` (removes what it returns; a
+  state change is never a ``GET``, so a cross-site ``<img src>`` cannot destroy the queue).
 * ``DELETE /memories/{memory_id}`` -> ``{deleted: true}`` (404 when unknown).
 * ``GET /healthz`` -> ``{status: "ok", version}`` (never requires the token).
 
@@ -16,8 +18,11 @@ Every serialised recollection is ``Recollection.to_dict()`` plus ``prompt_line``
 (``Recollection.to_prompt_line()``), which remote hooks inject verbatim.
 
 Errors: malformed input (``ObservationError``/``ValueError``) -> 422, an unavailable channel
--> 400, unknown adapter or memory -> 404, missing/invalid bearer token -> 401, body larger
-than ``max_body_bytes`` -> 413. Request bodies and media are never logged.
+-> 400, unknown adapter or memory -> 404, a storage refusal (``StoreError``, e.g. "the text
+model changed") -> 409, any other ``MadeleineError`` -> 500 (all with the error message as
+``detail``), missing/invalid bearer token -> 401, body larger than ``max_body_bytes`` -> 413,
+``Host`` not in ``allowed_hosts`` -> 421, ``Origin`` not in ``allowed_hosts`` -> 403.
+Request bodies and media are never logged.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import urllib.parse
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from datetime import datetime
@@ -44,6 +50,7 @@ from madeleine.core.types import (
     Clock,
     CueAdapter,
     JSONValue,
+    MadeleineError,
     MemoryEngine,
     MemoryNotFoundError,
     ObservationError,
@@ -51,13 +58,14 @@ from madeleine.core.types import (
     RecallQuery,
     Recollection,
     SensoryContext,
+    StoreError,
     SystemClock,
 )
 from madeleine.ingest import _fields as f
 from madeleine.ingest import default_adapters
 from madeleine.ingest.webhook import parse_generic_payload
 
-__all__ = ["DEFAULT_MAX_BODY_BYTES", "create_app"]
+__all__ = ["DEFAULT_MAX_BODY_BYTES", "LOOPBACK_HOSTS", "create_app", "default_allowed_hosts"]
 
 _log = logging.getLogger("madeleine.ingest")
 
@@ -65,6 +73,11 @@ DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
 """Default request body limit (10 MiB) - bounds base64 photos / audio clips."""
 
 _PUBLIC_PATHS = frozenset({"/healthz"})
+
+LOOPBACK_HOSTS: tuple[str, ...] = ("127.0.0.1", "localhost", "[::1]", "::1")
+"""Hosts accepted in ``Host``/``Origin`` headers by default (DNS-rebinding protection)."""
+
+ALLOWED_HOSTS_ENV = "MADELEINE_ALLOWED_HOSTS"
 
 LifespanFactory = Callable[[], AbstractAsyncContextManager[None]]
 
@@ -123,7 +136,8 @@ class MemoryIn(_ContextFields):
 class RecallIn(_ContextFields):
     """Body of ``POST /recall`` (the MCP ``recall`` tool's fields).
 
-    ``time`` takes part in the match only when ``at`` is given.
+    ``time`` takes part in the match only when ``at`` is given. ``query`` is used literally
+    (``""`` means no query). Unknown ``channels`` are rejected with 422.
     """
 
     query: str | None = None
@@ -135,8 +149,35 @@ class RecallIn(_ContextFields):
 
 
 # --------------------------------------------------------------------------------------
-# ASGI guard: bearer token + body size limit (also covers mounted sub-apps such as /mcp)
+# ASGI guard: Host/Origin allow-list, bearer token, body size limit (also covers mounted
+# sub-apps such as /mcp)
 # --------------------------------------------------------------------------------------
+
+
+def default_allowed_hosts() -> list[str]:
+    """:data:`LOOPBACK_HOSTS` plus the comma-separated ``MADELEINE_ALLOWED_HOSTS``."""
+    extra = [h.strip() for h in os.environ.get(ALLOWED_HOSTS_ENV, "").split(",") if h.strip()]
+    return [*LOOPBACK_HOSTS, *extra]
+
+
+def _normalize_host(value: str) -> str:
+    """``"LocalHost:8765"`` -> ``"localhost"``, ``"[::1]:8765"`` -> ``"::1"`` (port dropped)."""
+    host = value.strip().lower()
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end] if end != -1 else host
+    if host.count(":") == 1:  # host:port (a bare IPv6 address has several colons)
+        host = host.split(":", 1)[0]
+    return host.rstrip(".")
+
+
+def _origin_host(origin: str) -> str | None:
+    """The host of an ``Origin`` header (``None`` for ``"null"`` or garbage)."""
+    try:
+        hostname = urllib.parse.urlsplit(origin.strip()).hostname
+    except ValueError:
+        return None
+    return _normalize_host(hostname) if hostname else None
 
 
 class _BodyTooLargeError(HTTPException):
@@ -147,10 +188,35 @@ class _BodyTooLargeError(HTTPException):
 class _GuardMiddleware:
     """Pure ASGI middleware (streaming-safe, unlike ``BaseHTTPMiddleware``)."""
 
-    def __init__(self, app: ASGIApp, *, token: str | None, max_body_bytes: int) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        token: str | None,
+        max_body_bytes: int,
+        allowed_hosts: frozenset[str] | None,
+    ) -> None:
         self.app = app
         self.token = token.encode() if token else None
         self.max_body_bytes = max_body_bytes
+        self.allowed_hosts = allowed_hosts  # None: any host (check disabled with "*")
+
+    def _host_problem(self, scope: Scope) -> tuple[int, str] | None:
+        """``(status, detail)`` when the Host or Origin header is not allowed."""
+        if self.allowed_hosts is None:
+            return None
+        host: str | None = None
+        origin: str | None = None
+        for key, value in scope.get("headers", ()):
+            if key == b"host":
+                host = value.decode("latin-1")
+            elif key == b"origin":
+                origin = value.decode("latin-1")
+        if host is None or _normalize_host(host) not in self.allowed_hosts:
+            return 421, "Invalid Host header"
+        if origin is not None and _origin_host(origin) not in self.allowed_hosts:
+            return 403, "Invalid Origin header"
+        return None
 
     def _authorized(self, scope: Scope) -> bool:
         if self.token is None:
@@ -171,6 +237,14 @@ class _GuardMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
+            return
+        problem = self._host_problem(scope)
+        if problem is not None:
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+                return
+            status, detail = problem
+            await JSONResponse({"detail": detail}, status_code=status)(scope, receive, send)
             return
         if not self._authorized(scope):
             if scope["type"] == "websocket":
@@ -265,6 +339,7 @@ def create_app(
     api_token: str | None = None,
     max_body_bytes: int | None = None,
     clock: Clock | None = None,
+    allowed_hosts: Sequence[str] | None = None,
 ) -> FastAPI:
     """Build the ingestion app around ``engine`` (which the caller owns and closes).
 
@@ -281,6 +356,12 @@ def create_app(
       ``MADELEINE_MAX_BODY_BYTES``, default :data:`DEFAULT_MAX_BODY_BYTES`.
     * ``clock`` - "now" for context fields given without ``at`` (default system clock;
       cues with no context fields use the engine's own clock).
+    * ``allowed_hosts`` - DNS-rebinding protection for every route (``/healthz`` and mounted
+      apps included): a request whose ``Host`` header (port ignored) is not listed gets 421,
+      one carrying an ``Origin`` whose host is not listed gets 403. ``None`` means
+      :func:`default_allowed_hosts` (loopback names plus ``MADELEINE_ALLOWED_HOSTS``,
+      comma-separated). An entry ``"*"`` disables the check - **unsafe**: any web page the
+      user visits can then reach the API through DNS rebinding.
     """
     clk: Clock = clock or SystemClock()
     raw_token = os.environ.get("MADELEINE_API_TOKEN", "") if api_token is None else api_token
@@ -298,6 +379,8 @@ def create_app(
             raise ValueError(f"duplicate cue adapter name {adapter.name!r}")
         by_name[adapter.name] = adapter
     factories = tuple(lifespans)
+    hosts = default_allowed_hosts() if allowed_hosts is None else list(allowed_hosts)
+    host_set = None if "*" in hosts else frozenset(_normalize_host(h) for h in hosts if h.strip())
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -312,7 +395,7 @@ def create_app(
         description="Involuntary, cue-triggered memory for AI agents: HTTP ingestion.",
         lifespan=lifespan,
     )
-    app.add_middleware(_GuardMiddleware, token=token, max_body_bytes=limit)
+    app.add_middleware(_GuardMiddleware, token=token, max_body_bytes=limit, allowed_hosts=host_set)
 
     async def _unprocessable(_: Request, exc: Exception) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=422)
@@ -324,10 +407,21 @@ def create_app(
         detail = exc.args[0] if exc.args else "not found"
         return JSONResponse({"detail": f"memory not found: {detail}"}, status_code=404)
 
+    async def _conflict(_: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    async def _internal(_: Request, exc: Exception) -> JSONResponse:
+        _log.warning("request failed: %s", type(exc).__name__)
+        return JSONResponse({"detail": str(exc) or type(exc).__name__}, status_code=500)
+
+    # Starlette picks the handler of the first class in the exception's MRO, so the
+    # specific MadeleineError subclasses must be registered explicitly (as they are here).
     app.add_exception_handler(ObservationError, _unprocessable)
     app.add_exception_handler(ValueError, _unprocessable)
     app.add_exception_handler(ChannelNotAvailableError, _unavailable)
     app.add_exception_handler(MemoryNotFoundError, _not_found)
+    app.add_exception_handler(StoreError, _conflict)
+    app.add_exception_handler(MadeleineError, _internal)
 
     def _sense(
         signals: list[RawSignal], context: SensoryContext | None, source: str
@@ -392,7 +486,7 @@ def create_app(
         """PULL recall (fields of the ``recall`` tool); no side effects."""
         now = clk.now()
         signals = _signals(body.signals, now)
-        query = f.as_str(body.query, "query")
+        query = body.query or None  # taken literally ("" means "no query", as in MCP)
         if query is not None:
             if any(s.channel == TEXT for s in signals):
                 raise ObservationError("text given both as 'query' and inside 'signals'")
@@ -402,6 +496,13 @@ def create_app(
         )
         if not signals and context is None:
             raise ObservationError("recall needs a query, signals, a location or 'at'")
+        only: frozenset[str] | None = None
+        if body.channels:
+            known = engine.channels.names()
+            unknown = sorted(set(body.channels) - set(known))
+            if unknown:
+                raise ObservationError(f"unknown channel(s) {unknown}; available: {list(known)}")
+            only = frozenset(body.channels)
         cue = engine.build_cue(
             signals, context=context, include_time=body.at is not None, source="http:recall"
         )
@@ -409,7 +510,7 @@ def create_app(
             RecallQuery(
                 cue=cue,
                 k=body.k,
-                channels=frozenset(body.channels) if body.channels else None,
+                channels=only,
                 tags=frozenset(body.tags) if body.tags else None,
                 min_score=body.min_score,
             )
@@ -419,10 +520,26 @@ def create_app(
 
     @app.get("/recollections/pending", tags=["recollections"])
     def get_pending(
-        drain: bool = True, limit: Annotated[int | None, Query(ge=1, le=1000)] = None
+        request: Request, limit: Annotated[int | None, Query(ge=1, le=1000)] = None
     ) -> dict[str, Any]:
-        """Queued involuntary recollections, oldest first (``drain=true`` removes them)."""
-        items = engine.pending_recollections(limit=limit, drain=drain)
+        """Queued involuntary recollections, oldest first, **without** removing them."""
+        if "drain" in request.query_params:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "GET /recollections/pending only peeks and takes no 'drain' parameter; "
+                    "use POST /recollections/drain?limit=N to remove recollections"
+                ),
+            )
+        items = engine.pending_recollections(limit=limit, drain=False)
+        return {"recollections": [_recollection_json(r) for r in items]}
+
+    @app.post("/recollections/drain", tags=["recollections"])
+    def drain_pending(
+        limit: Annotated[int | None, Query(ge=1, le=1000)] = None,
+    ) -> dict[str, Any]:
+        """Remove and return queued recollections, oldest first (each is delivered once)."""
+        items = engine.pending_recollections(limit=limit, drain=True)
         return {"recollections": [_recollection_json(r) for r in items]}
 
     @app.delete("/memories/{memory_id}", tags=["memories"])

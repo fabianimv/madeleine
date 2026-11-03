@@ -13,7 +13,14 @@ from fastapi.testclient import TestClient
 from starlette.types import Receive, Scope, Send
 
 from madeleine import __version__
-from madeleine.core.types import ChannelNotAvailableError, RawSignal, SensoryContext
+from madeleine.core.types import (
+    ChannelNotAvailableError,
+    MadeleineError,
+    ObservationError,
+    RawSignal,
+    SensoryContext,
+    StoreError,
+)
 from madeleine.ingest import create_app
 from madeleine.ingest.app import DEFAULT_MAX_BODY_BYTES
 from madeleine.testing import FakeClock, FakeEngine
@@ -269,13 +276,33 @@ def test_pending_peek_drain_limit(client: TestClient, engine: FakeEngine, clock:
     engine.remember("one two three")
     engine.remember("one two four")
     client.post("/cues", json={"text": "one two three four"})
-    assert len(client.get("/recollections/pending?drain=false").json()["recollections"]) == 2
-    first = client.get("/recollections/pending?limit=1").json()["recollections"]
+    assert len(client.get("/recollections/pending").json()["recollections"]) == 2
+    assert len(client.get("/recollections/pending?limit=1").json()["recollections"]) == 1
+    assert engine.queue.pending_count() == 2  # GET only peeks
+    first = client.post("/recollections/drain?limit=1").json()["recollections"]
     assert len(first) == 1
     assert "prompt_line" in first[0]
     assert len(client.get("/recollections/pending").json()["recollections"]) == 1
-    assert client.get("/recollections/pending").json() == {"recollections": []}
+    assert len(client.post("/recollections/drain").json()["recollections"]) == 1
+    assert client.post("/recollections/drain").json() == {"recollections": []}
     assert client.get("/recollections/pending?limit=0").status_code == 422
+    assert client.post("/recollections/drain?limit=0").status_code == 422
+    assert client.post("/recollections/drain?limit=1001").status_code == 422
+
+
+@pytest.mark.parametrize("query", ["drain=true", "drain=false", "drain=1&limit=2"])
+def test_get_pending_never_drains(client: TestClient, engine: FakeEngine, query: str) -> None:
+    """R6: a GET (e.g. a cross-site <img src>) must not change state."""
+    engine.remember("one two three")
+    client.post("/cues", json={"text": "one two three"})
+    r = client.get(f"/recollections/pending?{query}")
+    assert r.status_code == 422
+    assert "POST /recollections/drain" in r.json()["detail"]
+    assert engine.queue.pending_count() == 1
+
+
+def test_drain_is_not_a_get(client: TestClient) -> None:
+    assert client.get("/recollections/drain").status_code == 405
 
 
 def test_channel_not_available_from_engine_is_400(engine: FakeEngine, clock: FakeClock) -> None:
@@ -445,6 +472,8 @@ def test_curl_script_covers_every_payload() -> None:
         assert f"{route_for(path)} {path.name}" in script, path.name
     for route in ("/healthz", "/recollections/pending", "/memories/${MEMORY_ID}"):
         assert route in script
+    assert 'call POST "/recollections/drain' in script
+    assert "drain=" not in script  # GET is peek-only (R6)
 
 
 def test_home_assistant_yaml_parses() -> None:
@@ -467,3 +496,88 @@ def test_claude_code_settings_example() -> None:
     [hook] = entry["hooks"]
     assert hook["type"] == "command"
     assert hook["command"] == "uvx madeleine-mcp hook claude-code"
+
+
+# -- R12: wrong-typed webhook fields are 4xx, never 500 --------------------------------
+
+_WRONG_TYPES: list[Any] = [123, 1.5, True, [], ["x"], {}, {"a": 1}, ""]
+_TOP_FIELDS = [
+    "at", "date", "time_fired", "text", "geohash", "lat", "lon", "latitude", "longitude",
+    "tags", "salience", "biometric", "signals", "entity_id", "state", "old_state", "event",
+    "event_type", "zone", "attributes", "data", "heart_rate", "focus", "battery",
+    "photo_b64", "photo_mime_type", "audio_b64", "audio_mime_type",
+]  # fmt: skip
+_SIGNAL_FIELDS = ["channel", "value", "data_b64", "mime_type", "uri", "at"]
+
+
+def _fuzz_bodies() -> Iterator[dict[str, Any]]:
+    for field in _TOP_FIELDS:
+        for bad in _WRONG_TYPES:
+            yield {"text": "hello", "entity_id": "light.hall", "state": "on", field: bad}
+    for field in _SIGNAL_FIELDS:
+        for bad in _WRONG_TYPES:
+            yield {"signals": [{"channel": "text", "value": "x", field: bad}]}
+
+
+@pytest.mark.parametrize("adapter", ["generic", "home_assistant", "ios_shortcuts"])
+def test_adapter_routes_never_500_on_wrong_types(engine: FakeEngine, adapter: str) -> None:
+    with TestClient(create_app(engine), raise_server_exceptions=False) as c:
+        for body in _fuzz_bodies():
+            r = c.post(f"/cues/{adapter}", json=body)
+            assert r.status_code < 500, (body, r.text)
+
+
+def test_signal_at_must_be_a_string(client: TestClient) -> None:
+    r = client.post(
+        "/cues/generic", json={"signals": [{"channel": "text", "value": "x", "at": 123}]}
+    )
+    assert r.status_code == 422
+    assert "signals[0].at" in r.json()["detail"]
+
+
+# -- R10: error mapping ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("exc", "status"),
+    [
+        (StoreError("text model changed: re-embed or use another database"), 409),
+        (MadeleineError("something deliberate went wrong"), 500),
+        (ObservationError("bad observation"), 422),
+        (ChannelNotAvailableError("pip install 'madeleine-mcp[image]'"), 400),
+    ],
+)
+def test_madeleine_errors_are_mapped_with_their_message(
+    clock: FakeClock, exc: Exception, status: int
+) -> None:
+    class Failing(FakeEngine):
+        def remember(self, *args: Any, **kwargs: Any) -> Any:
+            raise exc
+
+    with TestClient(create_app(Failing(clock=clock)), raise_server_exceptions=False) as c:
+        r = c.post("/memories", json={"content": "x"})
+    assert r.status_code == status
+    assert r.json() == {"detail": str(exc)}
+
+
+# -- R18: /recall consistency with MCP -------------------------------------------------
+
+
+def test_recall_unknown_channels_is_422(client: TestClient, engine: FakeEngine) -> None:
+    engine.remember("rain on a tin roof")
+    r = client.post("/recall", json={"query": "rain", "channels": ["text", "smell"]})
+    assert r.status_code == 422
+    assert "smell" in r.json()["detail"]
+    assert "available" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("word", ["null", "None", "unknown", "unavailable"])
+def test_recall_query_is_literal(client: TestClient, engine: FakeEngine, word: str) -> None:
+    engine.remember(f"the label said {word}")
+    r = client.post("/recall", json={"query": word})
+    assert r.status_code == 200, r.text
+    assert [h["memory"]["content"] for h in r.json()["results"]] == [f"the label said {word}"]
+
+
+def test_recall_empty_query_means_no_query(client: TestClient) -> None:
+    assert client.post("/recall", json={"query": ""}).status_code == 422
