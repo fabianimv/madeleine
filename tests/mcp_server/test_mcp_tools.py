@@ -356,3 +356,29 @@ async def test_mcp_matches_http_surface(engine: FakeEngine, mode: str) -> None:
         )
         # A location alone is a valid cue.
         assert await call(client, "sense", {"geohash": EIFFEL}) == []
+
+
+async def test_tool_definitions_are_complete() -> None:
+    """Directories (e.g. Glama) grade tool definitions; keep them complete and explicit."""
+    from mcp import Client
+
+    from madeleine.mcp_server import create_server
+    from madeleine.testing import FakeEngine
+
+    async with Client(create_server(FakeEngine())) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+    assert set(tools) == {"remember", "recall", "sense", "pending_recollections", "forget"}
+    for tool in tools.values():
+        assert tool.description, tool.name
+        assert len(tool.description) >= 200, tool.name
+        assert "Returns" in tool.description, tool.name
+        props = tool.input_schema.get("properties", {})
+        assert all(p.get("description") for p in props.values()), tool.name
+        a = tool.annotations
+        assert a is not None, tool.name
+        assert a.title, tool.name
+        hints = (a.read_only_hint, a.destructive_hint, a.idempotent_hint, a.open_world_hint)
+        assert None not in hints, tool.name
+        assert a.open_world_hint is False, tool.name  # everything is local
+    assert tools["recall"].annotations.read_only_hint is True  # type: ignore[union-attr]
+    assert tools["forget"].annotations.destructive_hint is True  # type: ignore[union-attr]
