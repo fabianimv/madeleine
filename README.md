@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/logo.png" width="120" alt="madeleine logo: a golden scallop shell with three sparks rising"></p>
+
 # madeleine
 
 **Involuntary memory for AI agents.** A place, an hour, a sound, a photo or a sensor reading
