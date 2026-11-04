@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-11-03
 
 First public version.
 
@@ -59,3 +59,5 @@ First public version.
   - `secure_delete` on `forget`.
   - Slimmer queue payloads (no embeddings).
   - The hook no longer loses recollections, and wraps them as untrusted data.
+
+[0.1.0]: https://github.com/fabianimv/madeleine/releases/tag/v0.1.0

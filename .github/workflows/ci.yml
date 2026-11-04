@@ -58,3 +58,17 @@ jobs:
         run: |
           uv build -o dist
           uvx --from "$(ls dist/*.whl)" madeleine-mcp demo
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Build
+        run: docker build -t madeleine-mcp:ci .
+      - name: Offline demo inside the image
+        run: docker run --rm madeleine-mcp:ci demo
+      - name: Runs as non-root and defaults to stdio serve
+        run: |
+          test "$(docker run --rm --entrypoint id madeleine-mcp:ci -u)" = "10001"
+          docker run --rm madeleine-mcp:ci --version

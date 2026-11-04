@@ -7,7 +7,12 @@ the taste of a madeleine brought back Proust's childhood.
 <!-- mcp-name: io.github.fabianimv/madeleine -->
 
 [![CI](https://github.com/fabianimv/madeleine/actions/workflows/ci.yml/badge.svg)](https://github.com/fabianimv/madeleine/actions/workflows/ci.yml)
-· Python 3.11–3.13 · Apache-2.0 · local-first (SQLite) · MCP server + Python library
+[![PyPI](https://img.shields.io/pypi/v/madeleine-mcp)](https://pypi.org/project/madeleine-mcp/)
+[![Python](https://img.shields.io/pypi/pyversions/madeleine-mcp)](https://pypi.org/project/madeleine-mcp/)
+[![MCP Registry](https://img.shields.io/badge/MCP%20Registry-io.github.fabianimv%2Fmadeleine-blue)](https://registry.modelcontextprotocol.io/v0/servers?search=io.github.fabianimv/madeleine)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+
+Local-first (SQLite) · MCP server + Python library · no telemetry
 
 Most agent memory is *voluntary*: the agent decides to search, writes a query, and gets
 results. madeleine adds the other pathway. Every memory is stored with the **sensory
@@ -50,6 +55,46 @@ claude mcp add madeleine -- uvx madeleine-mcp serve
 The hook works even if your client ignores MCP notifications. See
 [examples/claude_code](examples/claude_code/README.md) for options such as `--sense-prompt`,
 which treats what you type as a cue too.
+
+### Other MCP clients
+
+The server is a standard stdio MCP server (`uvx madeleine-mcp serve`), so any MCP client can
+use the five tools. **Involuntary** delivery on every prompt (step 3 above) is built for
+Claude Code; in other clients the agent receives recollections by calling
+`pending_recollections`, which the server's instructions ask it to do at the start of each
+turn.
+
+<details><summary>Claude Desktop, Cursor, VS Code, OpenCode, Docker</summary>
+
+Claude Desktop (`claude_desktop_config.json`) and Cursor (`~/.cursor/mcp.json`):
+
+```json
+{"mcpServers": {"madeleine": {"command": "uvx", "args": ["madeleine-mcp", "serve"]}}}
+```
+
+VS Code (`.vscode/mcp.json`):
+
+```json
+{"servers": {"madeleine": {"type": "stdio", "command": "uvx", "args": ["madeleine-mcp", "serve"]}}}
+```
+
+OpenCode (`opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {"madeleine": {"type": "local", "command": ["uvx", "madeleine-mcp", "serve"], "enabled": true}}
+}
+```
+
+Docker (memories persist in the `madeleine-data` volume):
+
+```bash
+docker build -t madeleine-mcp https://github.com/fabianimv/madeleine.git
+docker run -i --rm -v madeleine-data:/data madeleine-mcp        # stdio MCP server
+```
+
+</details>
 
 > **Semantic text needs the `[text]` extra.** The base install is small and offline. Without
 > the extra, text is matched *lexically* by a hashing embedder, so "car" and "automobile"
