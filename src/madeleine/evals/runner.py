@@ -71,6 +71,7 @@ __all__ = [
     "SweepRow",
     "default_engine_factory",
     "run_bench",
+    "semantic_engine_factory",
 ]
 
 _log = logging.getLogger(__name__)
@@ -84,6 +85,26 @@ DEFAULT_SWEEP: tuple[float, ...] = tuple(round(0.40 + 0.05 * i, 2) for i in rang
 PULL_K = 10
 HABITUATION_REPEATS = 5
 CUE_SOURCE = "bench"
+
+
+def semantic_engine_factory() -> EngineFactory:
+    """Like :func:`default_engine_factory`, but the text channel uses sentence-transformers
+    (the ``[text]`` extra; downloads the model on first use). The model is loaded once and
+    shared by every engine the factory creates."""
+    registry_mod: Any = importlib.import_module("madeleine.channels.registry")
+    text_mod: Any = importlib.import_module("madeleine.channels.text")
+    engine_mod: Any = importlib.import_module("madeleine.engine")
+    text_channel = text_mod.make_text_channel(MadeleineConfig(), backend="sentence-transformers")
+
+    def factory(recall_config: RecallConfig) -> MemoryEngine:
+        registry = registry_mod.hash_registry()
+        registry.register(text_channel, replace=True)
+        config = MadeleineConfig(
+            db_path=":memory:", text_backend="sentence-transformers", recall=recall_config
+        )
+        return cast(MemoryEngine, engine_mod.create_engine(config, registry=registry))
+
+    return factory
 
 
 def default_engine_factory(recall_config: RecallConfig) -> MemoryEngine:

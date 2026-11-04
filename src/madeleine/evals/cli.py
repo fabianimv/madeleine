@@ -7,8 +7,10 @@ import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
-from madeleine.evals.runner import DEFAULT_SWEEP, run_bench
+from madeleine.core.types import ChannelNotAvailableError
+from madeleine.evals.runner import DEFAULT_SWEEP, run_bench, semantic_engine_factory
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -21,6 +23,13 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=0, help="generator seed (0)")
     p.add_argument("--json", action="store_true", help="emit JSON instead of markdown")
     p.add_argument("--output", type=Path, default=None, help="write the report to PATH")
+    p.add_argument(
+        "--text-backend",
+        choices=("hash", "sentence-transformers"),
+        default="hash",
+        help="text embedder: offline 'hash' (default) or 'sentence-transformers' "
+        "(needs the [text] extra; downloads the model)",
+    )
     p.add_argument(
         "--sweep",
         action="store_true",
@@ -36,14 +45,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("error: --memories must be >= 1 and --cues >= 0", file=sys.stderr)
         return 2
     try:
+        extra: dict[str, Any] = {}
+        if args.text_backend != "hash":
+            extra["engine_factory"] = semantic_engine_factory()
         report = run_bench(
             memories=args.memories,
             cues=args.cues,
             seed=args.seed,
             thresholds=DEFAULT_SWEEP if args.sweep else None,
+            **extra,
         )
     except ImportError as exc:
         print(f"error: the recall engine is not available ({exc})", file=sys.stderr)
+        return 1
+    except ChannelNotAvailableError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     text = (
         json.dumps(report.to_dict(), indent=2, ensure_ascii=False) + "\n"

@@ -191,35 +191,52 @@ media starts playing, wearable sensors), [iOS Shortcuts](examples/ios_shortcuts/
 
 ## Benchmark (and where it fails)
 
-`madeleine bench` runs an offline synthetic benchmark: 500 memories across 3 cities, 300 cues
-with known ground truth, distractors and hard negatives. The numbers below are for the
-**offline hash text backend**. Full tables, methodology and blind spots are in
-[docs/benchmarks.md](docs/benchmarks.md).
+`madeleine bench` runs a synthetic benchmark: 500 memories across 3 cities, 300 cues with
+known ground truth, distractors and hard negatives. It is reported for both text backends.
+Full tables, methodology and blind spots are in [docs/benchmarks.md](docs/benchmarks.md).
 
-| cue category | pull R@1 | pull R@10 | fires its memory (hit rate) | precision of fires |
-|---|---:|---:|---:|---:|
-| place + hour | 0.57 | 0.60 | 0.81 | 0.56 |
-| text paraphrase only | 0.93 | 1.00 | **0.21** | 1.00 |
-| text + place + hour | 0.79 | 1.00 | 0.67 | 0.80 |
-| exact same photo / sound | 1.00 | 1.00 | 1.00 | 1.00 |
-| slightly altered photo / sound | 0.08 | 0.21 | **0.00** | – |
-| memory several years old | 0.63 | 0.93 | 0.40 | 0.86 |
-| **negatives** (distractors, time-only, same place + other topic) | | | false-trigger rate **0.00** | |
+```bash
+madeleine bench                                        # offline hash text backend
+madeleine bench --text-backend sentence-transformers   # semantic, needs the [text] extra
+```
 
-Latency with 500 memories: `sense` p50 11 ms and p95 23 ms, in pure Python.
+| | hash (offline, default) | semantic (`[text]`, MiniLM) |
+|---|---:|---:|
+| pull R@1 / R@10 | 0.69 / 0.81 | **0.74 / 0.82** |
+| precision of involuntary fires | 0.69 | **0.70** |
+| positive cues that fire their memory | 0.53 | **0.67** |
+| false-trigger rate on negatives | **0.00** | **0.00** |
+
+By cue category (hit rate = how often the right memory surfaced on its own):
+
+| cue category | hash: hit rate | semantic: hit rate | semantic: precision |
+|---|---:|---:|---:|
+| place + hour | 0.81 | 0.81 | 0.56 |
+| text paraphrase only | 0.21 | **0.67** | 1.00 |
+| text + place + hour | 0.67 | **0.76** | 0.76 |
+| exact same photo / sound | 1.00 | 1.00 | 1.00 |
+| slightly altered photo / sound | **0.00** | **0.00** | – |
+| memory several years old | 0.40 | **0.60** | 0.64 |
+| **negatives** (distractors, time-only, same place + other topic) | 0 fires | 0 fires | |
+
+Latency with 500 memories, in pure Python: `sense` p50 11 ms / p95 23 ms with the hash
+backend, p50 32 ms / p95 63 ms with the semantic one (CPU).
 
 **Honest limitations**
 
-* Involuntary recall is tuned to be conservative: no negative cue fired, but only about half
-  of positive cues fire their memory.
-* With the hash backend, text alone rarely intrudes (21 %) even when it is findable (R@10 = 1).
-  Semantic embeddings (`[text]`) should help, but those numbers are not reported here yet.
-* Altered media never matches with the hash backend. That needs the CLIP and CLAP extras, and
-  their similarity rescaling has only been calibrated on synthetic inputs.
+* Involuntary recall is tuned to be conservative: no negative cue fired, but a third (semantic)
+  to half (hash) of positive cues still do not fire their memory.
+* Both text backends are **calibrated** on the benchmark generator (seed 1; results are seed 0,
+  and seeds 2 and 3 agree). Without that, the hash backend under-scored paraphrases and MiniLM
+  over-scored unrelated sentences. The data is synthetic English text, so real-world numbers
+  will differ.
+* Altered media never matches in this benchmark, which uses the hash embedder for images and
+  sound. That needs the CLIP and CLAP extras, whose similarity rescaling has only been
+  calibrated on synthetic inputs.
 * Place + hour cues saturate (3 fires per cue), and only 56 % of those fall in the strict
   "same place, same hour ±1 h" ground truth.
-* The fusion is a hand-designed formula, not a learned one. The data is synthetic English
-  text. There is no multi-user auth and no UI. The olfactory channel is a stub.
+* The fusion is a hand-designed formula, not a learned one. There is no multi-user auth and no
+  UI. The olfactory channel is a stub.
 * Hour-of-day uses each timestamp's own UTC offset. Send local offsets (`+02:00`), or "evening"
   means UTC evening.
 

@@ -212,7 +212,83 @@ R@k = capped recall@k of PULL recall; precision = relevant fires / all fires; hi
 Other seeds (overall): seed 2 R@1 0.652, precision 0.644, hit rate 0.583, false-trigger 0.000;
 seed 3 R@1 0.716, precision 0.748, hit rate 0.559, false-trigger 0.000.
 
-### Reading the numbers honestly
+## Results: semantic text backend (`[text]`, all-MiniLM-L6-v2)
+
+Same benchmark, same seed (0), with the text channel on sentence-transformers. Images and sound
+still use the hash embedder. Run on CPU; the first `remember` includes loading the model
+(about 9 s), which is the `max` in the latency table.
+
+```bash
+madeleine bench --text-backend sentence-transformers --sweep   # needs the [text] extra
+```
+
+### Overall
+
+| category | cues | +/- | R@1 | R@5 | R@10 | precision | hit rate | false-trigger | fires |
+|---|---:|:---:|---:|---:|---:|---:|---:|---:|---:|
+| overall | 300 | ± | 0.740 | 0.812 | 0.824 | 0.698 | 0.667 | 0.000 | 248 |
+
+### Per category
+
+| category | cues | +/- | R@1 | R@5 | R@10 | precision | hit rate | false-trigger | fires |
+|---|---:|:---:|---:|---:|---:|---:|---:|---:|---:|
+| context | 42 | + | 0.571 | 0.586 | 0.598 | 0.563 | 0.810 | n/a | 126 |
+| text_paraphrase | 42 | + | 1.000 | 1.000 | 1.000 | 1.000 | 0.667 | n/a | 28 |
+| multi | 42 | + | 0.833 | 1.000 | 1.000 | 0.762 | 0.762 | n/a | 42 |
+| exact_media | 24 | + | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | n/a | 24 |
+| perturbed_media | 24 | + | 0.083 | 0.125 | 0.208 | n/a | 0.000 | n/a | 0 |
+| old_memory | 30 | + | 0.800 | 1.000 | 1.000 | 0.643 | 0.600 | n/a | 28 |
+| distractor | 36 | - | n/a | n/a | n/a | n/a | n/a | 0.000 | 0 |
+| time_only | 24 | - | n/a | n/a | n/a | n/a | n/a | 0.000 | 0 |
+| hard_negative | 36 | - | n/a | n/a | n/a | n/a | n/a | 0.000 | 0 |
+
+R@k = capped recall@k of PULL recall; precision = relevant fires / all fires; hit = positive cues where a relevant memory fired; false = negative cues that fired anything. `n/a` = undefined (e.g. no relevant memories).
+
+### Latency (ms)
+
+| operation | n | p50 | p95 | mean | max |
+|---|---:|---:|---:|---:|---:|
+| remember | 500 | 13.26 | 17.35 | 32.15 | 9166.46 |
+| build_cue | 300 | 0.12 | 0.20 | 0.15 | 7.34 |
+| recall | 300 | 31.97 | 63.67 | 33.36 | 444.78 |
+| sense | 300 | 31.59 | 63.21 | 32.14 | 70.62 |
+
+### Habituation
+
+**PASS** - cue #237 (multi) repeated 5x every 600 s inside a 6.0 h refractory period: fires per repeat [1, 0, 0, 0, 0], target fired 1x (expected 1), max fires of any memory 1; after the period the target fired 1x (expected 1).
+
+### Trigger threshold sweep
+
+| threshold | precision | hit rate | false-trigger rate | fires |
+|---:|---:|---:|---:|---:|
+| 0.40 | 0.398 | 0.828 | 0.365 | 517 |
+| 0.45 | 0.457 | 0.819 | 0.229 | 446 |
+| 0.50 | 0.510 | 0.809 | 0.062 | 396 |
+| 0.55 | 0.576 | 0.779 | 0.010 | 340 |
+| 0.60 | 0.683 | 0.696 | 0.000 | 262 |
+| 0.65 | 0.729 | 0.618 | 0.000 | 221 |
+| 0.70 | 0.708 | 0.490 | 0.000 | 185 |
+| 0.75 | 0.664 | 0.333 | 0.000 | 143 |
+| 0.80 | 0.633 | 0.211 | 0.000 | 98 |
+
+Other seeds (overall, calibrated): seed 2: R@1 0.706, precision 0.691, hit rate 0.711,
+false-trigger 0.000; seed 3: R@1 0.760, precision 0.765, hit rate 0.696, false-trigger 0.000.
+
+### Calibration note (semantic text backend)
+
+With plain `max(0, cos)`, MiniLM did **worse** than the calibrated hash backend on this
+benchmark (seed 0: precision 0.46, multi-channel precision 0.31, pull R@1 0.57). The reason
+is the opposite of the hash problem. MiniLM gives unrelated sentences a sizeable cosine
+(measured on seed 1: unrelated median 0.21, p99 0.43; same-topic median 0.34, p99 0.57;
+target paraphrases median 0.72). Those 20-40 % "text similarities" let the wrong memory at the
+same place ride along. The default model now uses `rescaled_cosine(0.35, 0.80)`. That range
+was chosen on seed 1 between two candidates (0.35 and 0.40 as the lower bound, which scored
+almost the same), taking the gentler one because real paraphrases often score lower than
+templated synthetic text. Seed 0 results: precision 0.46 -> 0.70, hit rate 0.54 -> 0.67,
+text-only paraphrase hit rate 0.31 -> 0.67, false triggers still 0. Other models keep
+`max(0, cos)` until someone calibrates them.
+
+## Reading the numbers honestly
 
 * **No negative cue fired anything** at the default threshold 0.62 (distractors, time-only
   matches, same-place-different-time-and-topic). The sweep shows why the default sits
@@ -221,8 +297,8 @@ seed 3 R@1 0.716, precision 0.748, hit rate 0.559, false-trigger 0.000.
   memory. Text-only paraphrases fire just 21 % of the time: with the lexical hash embedder a
   paraphrase that shares half its words is not strong enough evidence on its own. Pull
   recall (R@10 = 1.0 for paraphrases) shows the memory is *findable*; it just does not
-  *intrude*. Real semantic embeddings (`[text]` extra) are expected to help; that run is
-  not reported here because it needs model downloads.
+  *intrude*. With the semantic backend (`[text]`, calibrated) the same category fires 67 % of
+  the time with precision 1.00 (see the semantic results above).
 * **Context cues saturate.** A place + hour cue fires the maximum of 3 memories almost every
   time, and only 56 % of those are within the strict "same place, same hour ±1 h" ground
   truth: time carries only half the weight of place, so other memories at the same place
@@ -235,7 +311,7 @@ seed 3 R@1 0.716, precision 0.748, hit rate 0.559, false-trigger 0.000.
 * Latency is dominated by pure-Python similarity over up to 64 candidates per channel;
   p95 ≈ 23 ms for `sense` with 500 memories.
 
-### Calibration note (hash text backend)
+## Calibration note (hash text backend)
 
 Before calibration the hash text channel used `max(0, cos)`. Its cosine scale is compressed
 (paraphrase ≈ 0.34, unrelated ≈ 0.02), so a weak-looking text match dragged down every
