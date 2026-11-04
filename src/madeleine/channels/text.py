@@ -45,10 +45,13 @@ from madeleine.core.types import (
 __all__ = [
     "DEFAULT_TEXT_MODEL",
     "HASH_TEXT_COSINE_RANGE",
+    "MINILM_MODEL_IDS",
+    "MINILM_TEXT_COSINE_RANGE",
     "SentenceTransformerEmbedder",
     "TextAdapter",
     "hash_text_similarity",
     "make_text_channel",
+    "minilm_text_similarity",
     "text_similarity",
 ]
 
@@ -83,6 +86,22 @@ the same treatment CLIP/CLAP get for their (opposite) compression.
 hash_text_similarity: Final = rescaled_cosine(*HASH_TEXT_COSINE_RANGE)
 """Cosine mapped from ``[0.10, 0.45]`` to ``[0, 1]`` (clamped): the similarity for the
 hash text backend (see :data:`HASH_TEXT_COSINE_RANGE`)."""
+
+MINILM_TEXT_COSINE_RANGE: Final = (0.35, 0.80)
+"""Calibration of ``sentence-transformers/all-MiniLM-L6-v2`` (the default text model).
+
+MiniLM gives unrelated sentences a non-trivial cosine. On the benchmark generator with
+seed 1 (reported results use seed 0): target paraphrases median 0.72 (p10 0.66, p90 0.77),
+other memories of the same topic median 0.34 (p99 0.57), unrelated memories median 0.21
+(p99 0.43). With plain ``max(0, cos)`` an unrelated memory still counted as "20-40 %
+similar" on text and rode along on place/time matches (multi-channel trigger precision
+0.31). ``rescaled_cosine(0.35, 0.80)`` maps unrelated text to ~0 and a paraphrase to
+~0.8; seed-0 precision 0.46 -> 0.70, hit rate 0.54 -> 0.67, false triggers still 0.
+Only applied to this model; other models keep ``max(0, cos)`` until calibrated.
+"""
+MINILM_MODEL_IDS: Final = frozenset({"sentence-transformers/all-MiniLM-L6-v2", "all-MiniLM-L6-v2"})
+minilm_text_similarity: Final = rescaled_cosine(*MINILM_TEXT_COSINE_RANGE)
+"""Cosine mapped from ``[0.35, 0.80]`` to ``[0, 1]`` (clamped), for the default MiniLM model."""
 
 _auto_fallback_warned = False
 _warn_lock = threading.Lock()
@@ -248,7 +267,12 @@ def make_text_channel(
             raise ValueError(f"unknown text backend {chosen!r}")
     is_st = isinstance(embedder, SentenceTransformerEmbedder)
     is_hash = embedder.model_id is not None and embedder.model_id.startswith("hash-")
-    similarity = hash_text_similarity if is_hash else cosine01
+    if is_hash:
+        similarity = hash_text_similarity
+    elif embedder.model_id in MINILM_MODEL_IDS:
+        similarity = minilm_text_similarity
+    else:
+        similarity = cosine01
     spec = ChannelSpec(
         name=TEXT,
         dim=embedder.dim,

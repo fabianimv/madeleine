@@ -288,6 +288,13 @@ def bench(
     cues: Annotated[int, typer.Option(help="Synthetic cues.")] = 300,
     seed: Annotated[int, typer.Option(help="Random seed.")] = 0,
     sweep: Annotated[bool, typer.Option(help="Also sweep trigger thresholds.")] = False,
+    text_backend: Annotated[
+        str,
+        typer.Option(
+            "--text-backend",
+            help="hash (offline, default) or sentence-transformers (needs the [text] extra).",
+        ),
+    ] = "hash",
     as_json: JsonOpt = False,
     output: Annotated[str | None, typer.Option(help="Write the report to this file.")] = None,
 ) -> None:
@@ -295,6 +302,7 @@ def bench(
     from madeleine.evals.cli import main as bench_main
 
     argv = ["--memories", str(memories), "--cues", str(cues), "--seed", str(seed)]
+    argv += ["--text-backend", text_backend]
     if sweep:
         argv.append("--sweep")
     if as_json:

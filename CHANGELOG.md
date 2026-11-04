@@ -4,7 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [0.1.1] - unreleased
+## [Unreleased]
+
+### Added
+- `madeleine bench --text-backend sentence-transformers` runs the benchmark with semantic text
+  embeddings; results for both backends are in the README and docs/benchmarks.md.
+
+### Changed
+- The default semantic text model (all-MiniLM-L6-v2) is calibrated: text similarity is cosine
+  rescaled from [0.35, 0.80] to [0, 1]. Plain cosine let unrelated sentences score 0.2-0.4 and
+  ride along on place/time matches. Benchmark seed 0: precision 0.46 -> 0.70, hit rate
+  0.54 -> 0.67, false triggers still 0.
+
+## [0.1.1] - 2026-11-04
 
 ### Changed
 - MCP tool descriptions now say when to use each tool versus the others, list their side
