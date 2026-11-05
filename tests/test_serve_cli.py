@@ -88,3 +88,31 @@ def test_allow_file_uris_flag_reaches_engine_config(monkeypatch: pytest.MonkeyPa
     serve_mod.serve(transport="stdio", db=":memory:", allow_file_uris=True)
     assert seen["config"].allow_local_files is True  # type: ignore[attr-defined]
     assert seen["kwargs"] == {"allow_file_uris": True}
+
+
+def test_cli_show_and_edit(tmp_path: object) -> None:
+    import json as _json
+
+    db = f"{tmp_path}/m.db"
+    env = {"MADELEINE_TEXT_BACKEND": "hash"}
+    created = runner.invoke(app, ["remember", "tea at the tower", "--db", db], env=env)
+    mid = _json.loads(created.output)["id"]
+    shown = runner.invoke(app, ["show", mid, "--db", db], env=env)
+    assert shown.exit_code == 0
+    assert _json.loads(shown.output)["content"] == "tea at the tower"
+    edited = runner.invoke(
+        app,
+        ["edit", mid, "--content", "espresso", "--tag", "cafe", "--salience", "0.8", "--db", db],
+        env=env,
+    )
+    assert edited.exit_code == 0, edited.output
+    out = _json.loads(edited.output)
+    assert out["content"] == "espresso"
+    assert out["context"]["tags"] == ["cafe"]
+    assert out["context"]["salience"] == 0.8
+    missing = runner.invoke(app, ["show", "mem_nope", "--db", db], env=env)
+    assert missing.exit_code == 1
+    assert "no memory" in missing.output
+    bad = runner.invoke(app, ["edit", mid, "--salience", "3", "--db", db], env=env)
+    assert bad.exit_code == 1
+    assert "salience" in bad.output

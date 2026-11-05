@@ -27,7 +27,7 @@ Keep any servers that are already there.
         "MADELEINE_TEXT_BACKEND": "hash"
       },
       "disabled": false,
-      "autoApprove": ["recall", "pending_recollections"]
+      "autoApprove": ["recall", "pending_recollections", "get_memory"]
     }
   }
 }
@@ -40,15 +40,16 @@ Notes:
   entry. That variant downloads PyTorch and a ~90 MB model on first use.
 - Memories are stored in `~/.madeleine/madeleine.db` by default. To use another file, add
   `"MADELEINE_DB": "/absolute/path/madeleine.db"` to `env`.
-- `autoApprove` only lists the read-only tools. Leave `remember`, `sense` and `forget` to the
-  user's approval unless they say otherwise.
+- `autoApprove` only lists the read-only tools. Leave `remember`, `sense`, `update_memory` and
+  `forget` to the user's approval unless they say otherwise.
 
 ## Step 2: verify
 
 1. Optional sanity check in a terminal: `uvx madeleine-mcp demo`. It runs the whole loop
    offline and ends with `Done: the memory came back without being asked for.`
-2. Restart or refresh the MCP servers. The server `madeleine` should show 5 tools:
-   `remember`, `recall`, `sense`, `pending_recollections` and `forget`.
+2. Restart or refresh the MCP servers. The server `madeleine` should show 7 tools:
+   `remember`, `recall`, `sense`, `pending_recollections`, `get_memory`, `update_memory` and
+   `forget`.
 3. Try it:
    - call `remember` with `{"content": "Testing madeleine from Cline", "geohash": "u09tunq"}`;
    - call `recall` with `{"query": "testing madeleine"}`. The memory should come back first.

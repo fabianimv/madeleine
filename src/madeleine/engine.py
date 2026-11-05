@@ -407,6 +407,58 @@ class Madeleine:
     ) -> list[Recollection]:
         return self._queue.drain(limit) if drain else self._queue.peek(limit)
 
+    def get_memory(self, memory_id: str) -> Memory:
+        """One memory by id (raises :class:`MemoryNotFoundError`). No side effects."""
+        return self._store.get(memory_id)
+
+    def update_memory(
+        self,
+        memory_id: str,
+        *,
+        content: str | None = None,
+        tags: frozenset[str] | None = None,
+        salience: float | None = None,
+        metadata: Mapping[str, str] | None = None,
+        media_ref: str | None = None,
+    ) -> Memory:
+        """Edit a memory's annotations; the sensory fingerprint stays as encoded (ADR 0003)."""
+        if content is not None and not content.strip():
+            raise ObservationError("content must not be empty")
+        if salience is not None and not 0.0 <= salience <= 1.0:
+            raise ObservationError(f"salience must be in [0, 1], got {salience}")
+        with self._push_lock:
+            old = self._store.get(memory_id)
+            fp = old.fingerprint
+            ctx = replace(
+                fp.context,
+                tags=frozenset(t.strip() for t in tags if t.strip())
+                if tags is not None
+                else fp.context.tags,
+                salience=fp.context.salience if salience is None else float(salience),
+            )
+            embeddings = dict(fp.embeddings)
+            observations = dict(fp.observations)
+            new_content = old.content if content is None else content.strip()
+            text_obs = observations.get(TEXT)
+            derived = text_obs is not None and text_obs.text == old.content.strip()
+            if new_content != old.content and derived and TEXT in self._registry:
+                channel = self._registry.get(TEXT)
+                obs = channel.adapter.normalize(RawSignal(TEXT, new_content))
+                embeddings[TEXT] = self._embed(channel, obs)
+                observations[TEXT] = obs.without_raw()
+            updated = replace(
+                old,
+                content=new_content,
+                fingerprint=SensoryFingerprint(
+                    embeddings=embeddings, context=ctx, observations=observations
+                ),
+                metadata=dict(old.metadata) if metadata is None else dict(metadata),
+                media_ref=old.media_ref if media_ref is None else media_ref,
+            )
+            self._store.update(updated)
+        _log.debug("updated %s", memory_id)
+        return updated
+
     def forget(self, memory_id: str) -> bool:
         """Delete a memory everywhere. Serialised with ``sense`` in this process; the SQLite
         store also removes the memory's queue rows in its delete transaction."""

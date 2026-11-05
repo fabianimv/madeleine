@@ -43,6 +43,7 @@ from madeleine.core.types import (
     JSONValue,
     MadeleineError,
     MemoryEngine,
+    MemoryNotFoundError,
     ObservationError,
     RawSignal,
     RecallQuery,
@@ -131,6 +132,8 @@ async def _in_thread(fn: Callable[[], _T]) -> _T:
     """Run a blocking engine call off the event loop; madeleine errors -> tool errors."""
     try:
         return await anyio.to_thread.run_sync(fn)
+    except MemoryNotFoundError as exc:
+        raise ToolError(f"no memory with id {exc.args[0]!r}") from exc
     except (MadeleineError, ValueError) as exc:
         raise ToolError(str(exc)) from exc
 
@@ -384,6 +387,57 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
 
             return _json_result(await _in_thread(run))
 
+        async def get_memory(
+            memory_id: Annotated[
+                str, Field(description="The memory's id (e.g. 'mem_0189a3f2c1d4_9f3c2a7b1e').")
+            ],
+        ) -> CallToolResult:
+            def run() -> JSONValue:
+                return engine.get_memory(memory_id).to_dict()
+
+            return _json_result(await _in_thread(run))
+
+        async def update_memory(
+            memory_id: Annotated[
+                str, Field(description="The memory's id (e.g. 'mem_0189a3f2c1d4_9f3c2a7b1e').")
+            ],
+            content: Annotated[
+                str | None,
+                Field(description="New text of the memory. Omit to keep the current one."),
+            ] = None,
+            tags: Annotated[
+                list[str] | None,
+                Field(description="New tags; replaces the current list. Omit to keep them."),
+            ] = None,
+            salience: Annotated[
+                float | None,
+                Field(
+                    description="New significance, 0 (trivial) to 1 (life-changing). Omit to keep.",
+                    ge=0,
+                    le=1,
+                ),
+            ] = None,
+            metadata: Annotated[
+                dict[str, str] | None,
+                Field(description="New string key/value annotations; replaces the current ones."),
+            ] = None,
+            media_ref: Annotated[
+                str | None,
+                Field(description="New pointer (URI/path) to related media; never opened."),
+            ] = None,
+        ) -> CallToolResult:
+            def run() -> JSONValue:
+                return engine.update_memory(
+                    memory_id,
+                    content=content,
+                    tags=None if tags is None else frozenset(tags),
+                    salience=salience,
+                    metadata=metadata,
+                    media_ref=media_ref,
+                ).to_dict()
+
+            return _json_result(await _in_thread(run))
+
         self.add_tool(
             remember,
             description=(
@@ -468,6 +522,46 @@ class MadeleineMCPServer(MCPServer[dict[str, Any]]):
                 read_only_hint=False,
                 destructive_hint=False,
                 idempotent_hint=False,
+                open_world_hint=False,
+            ),
+            structured_output=False,
+        )
+        self.add_tool(
+            get_memory,
+            description=(
+                "Read one memory by id (as returned by remember, recall, sense or "
+                "pending_recollections): its content, when and where it was encoded, tags, "
+                "salience, metadata and which senses it was recorded with. Use it to look at a "
+                "specific memory before editing or forgetting it; to search by content, place "
+                "or time use recall instead. No side effects. Returns the memory as JSON, or an "
+                "error if no memory has that id."
+            ),
+            annotations=ToolAnnotations(
+                title="Get memory",
+                read_only_hint=True,
+                destructive_hint=False,
+                idempotent_hint=True,
+                open_world_hint=False,
+            ),
+            structured_output=False,
+        )
+        self.add_tool(
+            update_memory,
+            description=(
+                "Correct or annotate an existing memory by id: its content, tags, salience, "
+                "metadata or media_ref; omitted fields stay as they are, and tags/metadata are "
+                "replaced, not merged. Use it when the user corrects a detail or when a memory "
+                "turns out to matter more or less than first thought. The sensory context (when "
+                "and where it happened, what was sensed) cannot be edited, because it records "
+                "the moment of encoding; to change that, forget the memory and remember it "
+                "again. If the content changes, text matching follows the new content. Returns "
+                "the updated memory as JSON."
+            ),
+            annotations=ToolAnnotations(
+                title="Update memory",
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=True,
                 open_world_hint=False,
             ),
             structured_output=False,

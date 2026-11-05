@@ -23,7 +23,15 @@ from madeleine.testing import FakeEngine
 from tests.mcp_server.mcp_helpers import call
 from tests.mcp_server.test_mcp_notifications import LegacyInbox
 
-TOOLS = {"remember", "recall", "sense", "pending_recollections", "forget"}
+TOOLS = {
+    "remember",
+    "recall",
+    "sense",
+    "pending_recollections",
+    "get_memory",
+    "update_memory",
+    "forget",
+}
 
 STDIO_SERVER = """
 import logging

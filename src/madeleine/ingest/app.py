@@ -133,6 +133,19 @@ class MemoryIn(_ContextFields):
     store_raw: bool | None = None
 
 
+class MemoryPatch(BaseModel):
+    """Body of ``PATCH /memories/{id}`` (the MCP ``update_memory`` tool's fields). Omitted
+    fields stay unchanged; ``tags``/``metadata`` replace. The sensory context is not editable."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str | None = Field(default=None, min_length=1)
+    tags: list[str] | None = None
+    salience: float | None = Field(default=None, ge=0, le=1)
+    metadata: dict[str, str] | None = None
+    media_ref: str | None = None
+
+
 class RecallIn(_ContextFields):
     """Body of ``POST /recall`` (the MCP ``recall`` tool's fields).
 
@@ -541,6 +554,23 @@ def create_app(
         """Remove and return queued recollections, oldest first (each is delivered once)."""
         items = engine.pending_recollections(limit=limit, drain=True)
         return {"recollections": [_recollection_json(r) for r in items]}
+
+    @app.get("/memories/{memory_id}", tags=["memories"])
+    def get_memory(memory_id: str) -> dict[str, Any]:
+        """One memory by id (the MCP ``get_memory`` tool). 404 if unknown."""
+        return engine.get_memory(memory_id).to_dict()
+
+    @app.patch("/memories/{memory_id}", tags=["memories"])
+    def patch_memory(memory_id: str, body: MemoryPatch) -> dict[str, Any]:
+        """Edit a memory's annotations (the MCP ``update_memory`` tool). 404 if unknown."""
+        return engine.update_memory(
+            memory_id,
+            content=body.content,
+            tags=None if body.tags is None else frozenset(body.tags),
+            salience=body.salience,
+            metadata=body.metadata,
+            media_ref=body.media_ref,
+        ).to_dict()
 
     @app.delete("/memories/{memory_id}", tags=["memories"])
     def delete_memory(memory_id: str) -> dict[str, Any]:

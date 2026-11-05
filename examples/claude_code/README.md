@@ -3,7 +3,7 @@
 Two pieces, used together:
 
 1. **The MCP server** gives Claude the tools (`remember`, `recall`, `sense`,
-   `pending_recollections`, `forget`).
+   `pending_recollections`, `get_memory`, `update_memory`, `forget`).
 2. **The `UserPromptSubmit` hook** delivers *involuntary* recollections: before each prompt
    reaches Claude, it takes what is in madeleine's queue and injects it as additional
    context (framed as untrusted data, see [trust model](#trust-model-recollections-are-data-not-instructions)). This works whether or not the client honours MCP resource notifications.
