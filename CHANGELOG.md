@@ -4,9 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-05
 
 ### Added
+- Read and edit memories ([ADR 0003](docs/adr/0003-reading-and-editing-memories.md)):
+  - MCP tools `get_memory` and `update_memory`;
+  - HTTP `GET` and `PATCH /memories/{id}`;
+  - CLI `madeleine show` and `madeleine edit`;
+  - contract: `MemoryEngine.get_memory`, `MemoryEngine.update_memory`, `MemoryStore.update`.
+  Only annotations are editable (content, tags, salience, metadata, media_ref); the sensory
+  context of the moment of encoding is not. Editing derived text re-embeds it.
 - `madeleine bench --text-backend sentence-transformers` runs the benchmark with semantic text
   embeddings; results for both backends are in the README and docs/benchmarks.md.
 
@@ -79,5 +86,6 @@ First public version.
   - Slimmer queue payloads (no embeddings).
   - The hook no longer loses recollections, and wraps them as untrusted data.
 
+[0.2.0]: https://github.com/fabianimv/madeleine/releases/tag/v0.2.0
 [0.1.1]: https://github.com/fabianimv/madeleine/releases/tag/v0.1.1
 [0.1.0]: https://github.com/fabianimv/madeleine/releases/tag/v0.1.0

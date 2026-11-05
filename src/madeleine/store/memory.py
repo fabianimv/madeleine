@@ -116,6 +116,23 @@ class InMemoryStore:
             for name, vec in memory.fingerprint.embeddings.items():
                 self._vectors[name][memory.id] = np.asarray(vec, dtype=np.float32)
 
+    def update(self, memory: Memory) -> None:
+        """Replace a stored memory with an edited version of itself (same id, same channels).
+        Raises :class:`MemoryNotFoundError` / ``ValueError``."""
+        with self._lock:
+            self._check_open()
+            old = self._memories.get(memory.id)
+            if old is None:
+                raise MemoryNotFoundError(memory.id)
+            if set(old.fingerprint.embeddings) != set(memory.fingerprint.embeddings):
+                raise ValueError("update cannot add or remove channels")
+            for name, vec in memory.fingerprint.embeddings.items():
+                if len(vec) != self._specs[name].dim:
+                    raise ValueError(f"vector for {name!r} has the wrong length")
+            self._memories[memory.id] = memory
+            for name, vec in memory.fingerprint.embeddings.items():
+                self._vectors[name][memory.id] = np.asarray(vec, dtype=np.float32)
+
     def get(self, memory_id: str) -> Memory:
         with self._lock:
             self._check_open()

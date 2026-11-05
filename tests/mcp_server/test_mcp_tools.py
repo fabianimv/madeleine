@@ -17,7 +17,15 @@ from madeleine.mcp_server import PENDING_URI, create_server
 from madeleine.testing import FakeClock, FakeEngine
 from tests.mcp_server.mcp_helpers import MODES, call, call_error, payload, text
 
-TOOLS = {"remember", "recall", "sense", "pending_recollections", "forget"}
+TOOLS = {
+    "remember",
+    "recall",
+    "sense",
+    "pending_recollections",
+    "get_memory",
+    "update_memory",
+    "forget",
+}
 EIFFEL = "u09tunq"
 
 
@@ -49,7 +57,7 @@ async def test_server_identity_and_instructions(engine: FakeEngine, mode: str) -
         assert caps.resources.subscribe is True
 
 
-async def test_tools_list_exposes_exactly_the_five_tools(engine: FakeEngine, mode: str) -> None:
+async def test_tools_list_exposes_exactly_the_seven_tools(engine: FakeEngine, mode: str) -> None:
     async with connect(engine, mode) as client:
         tools = {t.name: t for t in (await client.list_tools()).tools}
         assert set(tools) == TOOLS
@@ -367,7 +375,15 @@ async def test_tool_definitions_are_complete() -> None:
 
     async with Client(create_server(FakeEngine())) as client:
         tools = {t.name: t for t in (await client.list_tools()).tools}
-    assert set(tools) == {"remember", "recall", "sense", "pending_recollections", "forget"}
+    assert set(tools) == {
+        "remember",
+        "recall",
+        "sense",
+        "pending_recollections",
+        "get_memory",
+        "update_memory",
+        "forget",
+    }
     for tool in tools.values():
         assert tool.description, tool.name
         assert len(tool.description) >= 200, tool.name
@@ -382,3 +398,31 @@ async def test_tool_definitions_are_complete() -> None:
         assert a.open_world_hint is False, tool.name  # everything is local
     assert tools["recall"].annotations.read_only_hint is True  # type: ignore[union-attr]
     assert tools["forget"].annotations.destructive_hint is True  # type: ignore[union-attr]
+
+
+async def test_get_and_update_memory_tools(engine: FakeEngine) -> None:
+    from mcp import Client
+
+    from madeleine.mcp_server import create_server
+
+    async with Client(create_server(engine)) as client:
+        mem = await call(client, "remember", {"content": "tea at the tower", "tags": ["paris"]})
+        got = await call(client, "get_memory", {"memory_id": mem["id"]})
+        assert got["content"] == "tea at the tower"
+        upd = await call(
+            client,
+            "update_memory",
+            {"memory_id": mem["id"], "content": "espresso by the river", "salience": 0.9},
+        )
+        assert upd["content"] == "espresso by the river"
+        assert upd["context"]["salience"] == 0.9
+        assert upd["context"]["tags"] == ["paris"]
+        assert (await call(client, "get_memory", {"memory_id": mem["id"]}))["content"] == (
+            "espresso by the river"
+        )
+        assert "no memory with id" in await call_error(
+            client, "get_memory", {"memory_id": "mem_nope"}
+        )
+        assert "empty" in await call_error(
+            client, "update_memory", {"memory_id": mem["id"], "content": " "}
+        )

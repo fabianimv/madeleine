@@ -149,6 +149,8 @@ brute-force over vectors kept in a plain table, logging a warning once.
 | `recall` | `query?` (text), `geohash?`, `lat?`/`lon?`, `at?`, `channels?`, `tags?`, `k=5` | `[ScoredMemory.to_dict()]` |
 | `sense` | `text?`, `geohash?`, `lat?`/`lon?`, `at?` (default now), `biometric?`, `signals?`, `source?` | `[Recollection.to_dict()]` that fired |
 | `pending_recollections` | `limit?`, `drain=true` | `[Recollection.to_dict()]` |
+| `get_memory` | `memory_id` | `Memory.to_dict()` |
+| `update_memory` | `memory_id`, `content?`, `tags?`, `salience?`, `metadata?`, `media_ref?` (ADR 0003: annotations only) | `Memory.to_dict()` |
 | `forget` | `memory_id` | `{deleted: bool}` |
 
 Resource `recollections://pending` (JSON list, non-draining peek). When the in-process queue
@@ -163,7 +165,7 @@ only if the server was started with `--allow-file-uris`; off by default).
 * `POST /cues/{adapter}` — adapter-specific payload (`generic`, `home_assistant`, `ios_shortcuts`)
 * `POST /memories` — the `remember` tool's fields (+ `metadata`, `embed_content`, `store_raw`) → 201
 * `POST /recall` — the `recall` tool's fields (time only when `at` is given; unknown channels → 422)
-* `DELETE /memories/{id}`
+* `GET /memories/{id}`, `PATCH /memories/{id}` (annotations only, ADR 0003), `DELETE /memories/{id}`
 * `GET /recollections/pending?limit=` — peek (never drains); `POST /recollections/drain?limit=` — take
 * `GET /healthz`
 * Guard on every route including mounted `/mcp`: Host/Origin allow-list (loopback +

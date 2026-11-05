@@ -255,6 +255,55 @@ def pending(
 
 
 @app.command()
+def show(
+    memory_id: Annotated[str, typer.Argument(help="Memory id (mem_...).")],
+    db: DbOpt = None,
+) -> None:
+    """Show one memory by id (JSON)."""
+    from madeleine.core.types import MemoryNotFoundError
+
+    engine = _engine(db, "hash")
+    try:
+        memory = engine.get_memory(memory_id)
+    except MemoryNotFoundError as exc:
+        raise _fail(f"no memory {memory_id!r}") from exc
+    finally:
+        engine.close()
+    typer.echo(json.dumps(memory.to_dict(), indent=2))
+
+
+@app.command()
+def edit(
+    memory_id: Annotated[str, typer.Argument(help="Memory id (mem_...).")],
+    content: Annotated[str | None, typer.Option(help="New content.")] = None,
+    tag: Annotated[
+        list[str] | None, typer.Option("--tag", help="Tag (repeatable); replaces all tags.")
+    ] = None,
+    salience: Annotated[float | None, typer.Option(help="New salience, 0..1.")] = None,
+    db: DbOpt = None,
+    text_backend: TextBackendOpt = None,
+) -> None:
+    """Edit a memory's content, tags or salience (time and place cannot be edited)."""
+    from madeleine.core.types import MadeleineError, MemoryNotFoundError
+
+    engine = _engine(db, text_backend)
+    try:
+        memory = engine.update_memory(
+            memory_id,
+            content=content,
+            tags=None if tag is None else frozenset(tag),
+            salience=salience,
+        )
+    except MemoryNotFoundError as exc:
+        raise _fail(f"no memory {memory_id!r}") from exc
+    except (MadeleineError, ValueError) as exc:
+        raise _fail(str(exc)) from exc
+    finally:
+        engine.close()
+    typer.echo(json.dumps(memory.to_dict(), indent=2))
+
+
+@app.command()
 def forget(
     memory_id: Annotated[str, typer.Argument(help="Memory id (mem_...).")],
     db: DbOpt = None,

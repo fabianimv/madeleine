@@ -61,7 +61,7 @@ which treats what you type as a cue too.
 ### Other MCP clients
 
 The server is a standard stdio MCP server (`uvx madeleine-mcp serve`), so any MCP client can
-use the five tools. **Involuntary** delivery on every prompt (step 3 above) is built for
+use the seven tools. **Involuntary** delivery on every prompt (step 3 above) is built for
 Claude Code; in other clients the agent receives recollections by calling
 `pending_recollections`, which the server's instructions ask it to do at the start of each
 turn.
@@ -159,7 +159,7 @@ curl -s localhost:8765/cues -H 'content-type: application/json' \
 |---|---|
 | `POST /cues` | Generic cue: `signals`, `at`, `geohash` or `lat`/`lon`, `tags`, `source` |
 | `POST /cues/{generic,home_assistant,ios_shortcuts}` | Payloads straight from those tools ([examples](examples/)) |
-| `POST /memories`, `POST /recall`, `DELETE /memories/{id}` | Same as the MCP tools |
+| `POST /memories`, `POST /recall`, `GET`/`PATCH`/`DELETE /memories/{id}` | Same as the MCP tools |
 | `GET /recollections/pending` · `POST /recollections/drain` | Peek / take queued involuntary recollections |
 
 Ready-made integrations: [Home Assistant](examples/home_assistant/README.md) (arriving home,
@@ -167,7 +167,8 @@ media starts playing, wearable sensors), [iOS Shortcuts](examples/ios_shortcuts/
 ("Arrive at location" personal automation), [curl](examples/curl.sh).
 
 **MCP surface:**
-* Tools: `remember`, `recall`, `sense`, `pending_recollections`, `forget`.
+* Tools: `remember`, `recall`, `sense`, `pending_recollections`, `get_memory`, `update_memory`,
+  `forget`.
 * Resource: `recollections://pending`, with `resources/updated` notifications when something
   surfaces. These notifications also work across processes that share the database.
 
@@ -252,7 +253,7 @@ backend, p50 32 ms / p95 63 ms with the semantic one (CPU).
 | `MADELEINE_API_TOKEN` | unset | Bearer token for the HTTP API (and the hook's `--url` mode) |
 | `MADELEINE_ALLOWED_HOSTS` | loopback | Extra Host/Origin names accepted by the HTTP server |
 
-CLI: `madeleine serve | remember | sense | recall | pending | forget | demo | bench | hook claude-code`
+CLI: `madeleine serve | remember | sense | recall | pending | show | edit | forget | demo | bench | hook claude-code`
 (`madeleine --help`).
 
 ## As a Python library

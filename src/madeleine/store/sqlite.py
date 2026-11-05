@@ -687,6 +687,72 @@ class SQLiteMemoryStore:
                     )
             self._db.mark_vec_dirty(conn)
 
+    def update(self, memory: Memory) -> None:
+        """Replace a stored memory with an edited version of itself, in one transaction.
+
+        The id and the set of channels must stay the same. Changed vectors are rewritten
+        (and re-indexed); raw blobs are never touched. Raises :class:`MemoryNotFoundError` or
+        ``ValueError``."""
+        fp = memory.fingerprint
+        ctx = fp.context
+        with self._db.write() as conn:
+            self._db.repair_vec_index(conn)
+            row = conn.execute("SELECT rowid FROM memories WHERE id = ?", (memory.id,)).fetchone()
+            if row is None:
+                raise MemoryNotFoundError(memory.id)
+            rowid = int(row[0])
+            stored = {
+                str(name): bytes(blob)
+                for name, blob in conn.execute(
+                    "SELECT channel, embedding FROM vectors WHERE memory_rowid = ?", (rowid,)
+                ).fetchall()
+            }
+            if set(stored) != set(fp.embeddings):
+                raise ValueError("update cannot add or remove channels")
+            channels = self._channels(conn)
+            for name, vec in fp.embeddings.items():
+                if len(vec) != channels[name][1]:
+                    raise ValueError(f"vector for {name!r} has the wrong length")
+            observations = {
+                c: o.to_dict(include_raw=False) for c, o in sorted(fp.observations.items())
+            }
+            conn.execute(
+                "UPDATE memories SET content = ?, media_ref = ?, ts = ?, ts_us = ?, geohash = ?, "
+                "salience = ?, tags_json = ?, metadata_json = ?, observations_json = ? "
+                "WHERE rowid = ?",
+                (
+                    memory.content,
+                    memory.media_ref,
+                    ctx.timestamp.isoformat(),
+                    _micros(ctx.timestamp),
+                    ctx.geohash,
+                    ctx.salience,
+                    json.dumps(sorted(ctx.tags)),
+                    json.dumps(dict(memory.metadata), sort_keys=True),
+                    json.dumps(observations, sort_keys=True),
+                    rowid,
+                ),
+            )
+            changed = False
+            for name, vec in fp.embeddings.items():
+                blob = vector_to_bytes(vec)
+                if blob == stored[name]:
+                    continue
+                changed = True
+                conn.execute(
+                    "UPDATE vectors SET embedding = ? WHERE memory_rowid = ? AND channel = ?",
+                    (blob, rowid, name),
+                )
+                if self._db.vec_enabled:
+                    ch_id, dim = channels[name]
+                    table = _ensure_vec_table(conn, ch_id, name, dim)
+                    conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))
+                    conn.execute(
+                        f"INSERT INTO {table}(rowid, embedding) VALUES (?, ?)", (rowid, blob)
+                    )
+            if changed:
+                self._db.mark_vec_dirty(conn)
+
     def get(self, memory_id: str) -> Memory:
         with self._db.read() as conn:
             rows = conn.execute(

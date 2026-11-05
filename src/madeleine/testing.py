@@ -372,6 +372,47 @@ class FakeEngine:
         self._queue.discard_memory(memory_id)
         return existed
 
+    def get_memory(self, memory_id: str) -> Memory:
+        return self.get(memory_id)
+
+    def update_memory(
+        self,
+        memory_id: str,
+        *,
+        content: str | None = None,
+        tags: frozenset[str] | None = None,
+        salience: float | None = None,
+        metadata: Mapping[str, str] | None = None,
+        media_ref: str | None = None,
+    ) -> Memory:
+        if content is not None and not content.strip():
+            raise ObservationError("content must not be empty")
+        if salience is not None and not 0.0 <= salience <= 1.0:
+            raise ObservationError(f"salience must be in [0, 1], got {salience}")
+        with self._lock:
+            old = self.get(memory_id)
+            fp = old.fingerprint
+            ctx = replace(
+                fp.context,
+                tags=fp.context.tags if tags is None else frozenset(tags),
+                salience=fp.context.salience if salience is None else salience,
+            )
+            obs = dict(fp.observations)
+            new_content = old.content if content is None else content.strip()
+            if TEXT in obs and obs[TEXT].text == old.content.strip():
+                obs[TEXT] = Observation(TEXT, text=new_content)
+            new = replace(
+                old,
+                content=new_content,
+                fingerprint=SensoryFingerprint(
+                    embeddings=dict(fp.embeddings), context=ctx, observations=obs
+                ),
+                metadata=dict(old.metadata) if metadata is None else dict(metadata),
+                media_ref=old.media_ref if media_ref is None else media_ref,
+            )
+            self._memories[memory_id] = new
+            return new
+
     def get(self, memory_id: str) -> Memory:
         """Convenience for tests (not part of the protocol)."""
         try:

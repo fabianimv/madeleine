@@ -783,6 +783,12 @@ class MemoryStore(Protocol):
         registered dimension."""
         ...
 
+    def update(self, memory: Memory) -> None:
+        """Replace a stored memory with an edited version of itself (ADR 0003): same id and
+        same set of channels; changed vectors are re-indexed, raw blobs are kept. Raises
+        :class:`MemoryNotFoundError` or ``ValueError``."""
+        ...
+
     def get(self, memory_id: str) -> Memory:
         """Return the memory or raise :class:`MemoryNotFoundError`."""
         ...
@@ -999,6 +1005,32 @@ class MemoryEngine(Protocol):
         self, *, limit: int | None = None, drain: bool = True
     ) -> list[Recollection]:
         """Read (``drain=True``: and remove) queued involuntary recollections."""
+        ...
+
+    def get_memory(self, memory_id: str) -> Memory:
+        """Return one memory by id, or raise :class:`MemoryNotFoundError`. No side effects."""
+        ...
+
+    def update_memory(
+        self,
+        memory_id: str,
+        *,
+        content: str | None = None,
+        tags: frozenset[str] | None = None,
+        salience: float | None = None,
+        metadata: Mapping[str, str] | None = None,
+        media_ref: str | None = None,
+    ) -> Memory:
+        """Edit a memory's annotations (ADR 0003); ``None`` leaves a field unchanged.
+
+        Editable: ``content``, ``tags`` (replaced), ``salience``, ``metadata`` (replaced),
+        ``media_ref``. The sensory fingerprint (time, place, observed signals) is what was
+        perceived at encoding time and is **not** editable. If ``content`` changes and the
+        memory's ``text`` observation was derived from the old content, the text observation
+        and its embedding follow the new content; an explicitly sensed text is kept.
+        Raises :class:`MemoryNotFoundError` or :class:`ObservationError` (empty content,
+        salience outside [0, 1]).
+        """
         ...
 
     def forget(self, memory_id: str) -> bool:
