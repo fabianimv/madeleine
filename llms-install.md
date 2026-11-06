@@ -19,14 +19,17 @@ servers that are already there. Where that file is depends on the client:
 - **Cline CLI / Cline app** (its data lives in `~/.cline/data/`):
   `~/.cline/data/settings/cline_mcp_settings.json`, or the path in `$CLINE_MCP_SETTINGS_PATH`
   if that variable is set. `cline mcp` can also manage servers.
-- **Cline in VS Code or another IDE**: open the Cline panel → **MCP Servers** → **Configure**
-  → **Configure MCP Servers**. That opens the exact file the extension reads; edit that one.
+- **Cline in VS Code, another IDE or the Cline app**: open Cline's MCP settings and use the
+  button that opens the JSON file: **Customize → MCP → Installed → Edit Configuration** in
+  recent versions, **MCP Servers → Configure → Configure MCP Servers** in older ones. That
+  opens the exact file Cline reads; edit that one. Saving it reloads the servers.
 - **Other clients**: their own MCP config (Claude Desktop `claude_desktop_config.json`,
   Cursor `~/.cursor/mcp.json`, ...); see the README for the snippets.
 
 Do **not** create a settings file or directory anywhere else: the client will not read it
 and the server will silently not appear. If you cannot find the file, ask the user to open
-the "Configure MCP Servers" screen once (it creates the file), then edit it. A `find` over
+the "Edit Configuration" / "Configure MCP Servers" screen once (it creates the file), then
+edit it. A `find` over
 the home directory can take minutes; wait for its result before deciding.
 
 ```json
